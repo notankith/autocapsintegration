@@ -41,6 +41,7 @@ if (!WORKER_SECRET || !MONGODB_URI || !ORACLE_PAR_URL) {
 let mongoClient: MongoClient
 let db: Db
 let isConnecting = false
+let activeFfmpegProcess: ChildProcessWithoutNullStreams | null = null
 
 async function connectMongo() {
   if (db) {
@@ -119,7 +120,11 @@ createServer(async (req, res) => {
     // Ensure MongoDB is connected before processing
     await connectMongo()
     
-    await processJob(payload)
+    // Fire and forget - don't await!
+    processJob(payload).catch(err => {
+      console.error("[worker] Background job failed", err)
+    })
+
     res.writeHead(202).end(JSON.stringify({ accepted: true, jobId: payload.jobId }))
   } catch (error) {
     console.error("Worker failed:", error)
@@ -127,6 +132,19 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, "0.0.0.0", () => {
  console.log(`FFmpeg worker listening on :${PORT} (public)`)
+})
+
+// Handle graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("[worker] SIGTERM received. Cleaning up...")
+  if (activeFfmpegProcess) {
+    console.log("[worker] Killing active FFmpeg process...")
+    activeFfmpegProcess.kill("SIGKILL")
+  }
+  if (mongoClient) {
+    await mongoClient.close()
+  }
+  process.exit(0)
 })
 
 async function processJob(payload: RenderJobPayload) {
@@ -570,6 +588,8 @@ function runFfmpeg(
 
   return new Promise<void>((resolve, reject) => {
     const ff = spawn(ffmpegBinary, args) as ChildProcessWithoutNullStreams
+    activeFfmpegProcess = ff
+
     ff.stderr.on("data", (chunk: Buffer) => {
       const payload = chunk.toString()
       console.log(payload)
@@ -579,7 +599,11 @@ function runFfmpeg(
         timestamps.forEach((seconds) => options.onProgressTimestamp?.(seconds))
       }
     })
-    ff.on("close", (code: number | null) => (code === 0 ? resolve() : reject(new Error(`FFmpeg exited: ${code}`))))
+    ff.on("close", (code: number | null) => {
+      activeFfmpegProcess = null
+      if (code === 0) resolve()
+      else reject(new Error(`FFmpeg exited: ${code}`))
+    })
   })
 }
 
