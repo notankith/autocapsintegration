@@ -12,8 +12,13 @@ export interface OverlayConfig {
   y: number;
 }
 
+interface SentenceGroup {
+  sentences: Array<{ sentence: KineticSentence; sentenceIndex: number }>;
+}
+
 const DEFAULT_CONFIG: OverlayConfig = { scale: 3.35, x: 50, y: 50 };
 const PREVIEW_BASE_FONT_PX = 44;
+const SENTENCES_PER_GROUP = 2;
 
 interface CreatorKineticOverlayProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -36,11 +41,11 @@ export function CreatorKineticOverlay({
   
   // Refs to store DOM elements for direct manipulation (performance)
   const wordRefs = useRef<(HTMLSpanElement | null)[]>([]);
-  const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const sentenceGroupRefs = useRef<(HTMLSpanElement | null)[]>([]);
   
   // State tracking refs (to avoid re-renders)
   const lastActiveWordIndex = useRef<number>(-1);
-  const lastSentenceIndex = useRef<number>(-1);
+  const lastSentenceGroupIndex = useRef<number>(-1);
 
   // Helper to validate numbers
   const isValidNumber = (n: any): n is number => typeof n === "number" && !Number.isNaN(n) && Number.isFinite(n);
@@ -290,12 +295,34 @@ export function CreatorKineticOverlay({
       : chunkWordsIntoSentences(processed);
 
     lastActiveWordIndex.current = -1;
-    lastSentenceIndex.current = -1;
+    lastSentenceGroupIndex.current = -1;
     wordRefs.current = [];
-    sentenceRefs.current = [];
+    sentenceGroupRefs.current = [];
 
     return finalResult;
   }, [flattenedWords, captions]);
+
+  const sentenceGroups = useMemo<SentenceGroup[]>(() => {
+    const groups: SentenceGroup[] = [];
+    for (let i = 0; i < sentences.length; i += SENTENCES_PER_GROUP) {
+      const chunk = sentences.slice(i, i + SENTENCES_PER_GROUP);
+      if (!chunk.length) continue;
+      groups.push({
+        sentences: chunk.map((sentence, offset) => ({ sentence, sentenceIndex: i + offset })),
+      });
+    }
+    return groups;
+  }, [sentences]);
+
+  const sentenceToGroupIndex = useMemo(() => {
+    const map: number[] = [];
+    sentenceGroups.forEach((group, groupIdx) => {
+      group.sentences.forEach(({ sentenceIndex }) => {
+        map[sentenceIndex] = groupIdx;
+      });
+    });
+    return map;
+  }, [sentenceGroups]);
 
   // Force re-render when captions change to ensure DOM refs are re-bound
   const [_, setForceUpdate] = useState(0);
@@ -345,47 +372,51 @@ export function CreatorKineticOverlay({
       }
 
       if (activeIndex === -1) {
-        if (lastSentenceIndex.current !== -1) {
-          const prevSentenceEl = sentenceRefs.current[lastSentenceIndex.current];
-          if (prevSentenceEl) {
-            prevSentenceEl.classList.remove("visible", "zoom-in");
+        if (lastSentenceGroupIndex.current !== -1) {
+          const prevGroup = sentenceGroupRefs.current[lastSentenceGroupIndex.current];
+          if (prevGroup) {
+            prevGroup.classList.remove("visible", "zoom-in");
           }
         }
         lastActiveWordIndex.current = -1;
+        lastSentenceGroupIndex.current = -1;
       } else {
         const activeEl = wordRefs.current[activeIndex];
         const sentenceIndex = sentences.findIndex(
           (s) => activeIndex >= s.startWordIndex && activeIndex <= s.endWordIndex
         );
+        const groupIndex = sentenceIndex !== -1 ? sentenceToGroupIndex[sentenceIndex] ?? -1 : -1;
 
         if (activeEl && sentenceIndex !== -1) {
           const color = getSentenceColor(sentenceIndex);
           activeEl.classList.add("active", color);
         }
 
-        if (sentenceIndex !== lastSentenceIndex.current) {
-          if (lastSentenceIndex.current !== -1) {
-            const prevSentenceEl = sentenceRefs.current[lastSentenceIndex.current];
-            if (prevSentenceEl) {
-              prevSentenceEl.classList.remove("visible", "zoom-in");
+        if (groupIndex !== lastSentenceGroupIndex.current) {
+          if (lastSentenceGroupIndex.current !== -1) {
+            const prevGroup = sentenceGroupRefs.current[lastSentenceGroupIndex.current];
+            if (prevGroup) {
+              prevGroup.classList.remove("visible", "zoom-in");
             }
           }
 
-          const newSentenceEl = sentenceRefs.current[sentenceIndex];
-          if (newSentenceEl) {
-            newSentenceEl.classList.add("visible");
-            newSentenceEl.classList.remove("zoom-in");
-            void newSentenceEl.offsetWidth;
-            newSentenceEl.classList.add("zoom-in");
+          if (groupIndex !== -1) {
+            const newGroup = sentenceGroupRefs.current[groupIndex];
+            if (newGroup) {
+              newGroup.classList.add("visible");
+              newGroup.classList.remove("zoom-in");
+              void newGroup.offsetWidth;
+              newGroup.classList.add("zoom-in");
+            }
           }
 
-          lastSentenceIndex.current = sentenceIndex;
+          lastSentenceGroupIndex.current = groupIndex;
         }
 
         lastActiveWordIndex.current = activeIndex;
       }
     }
-  }, [processedWords, sentences]);
+  }, [processedWords, sentences, sentenceToGroupIndex]);
 
   useEffect(() => {
     if (typeof currentTime === "number") {
@@ -435,12 +466,12 @@ export function CreatorKineticOverlay({
         const prevEl = wordRefs.current[lastActiveWordIndex.current];
         if (prevEl) prevEl.classList.remove("active", "blue", "yellow", "green");
       }
-      if (lastSentenceIndex.current !== -1) {
-        const prevSentenceEl = sentenceRefs.current[lastSentenceIndex.current];
+      if (lastSentenceGroupIndex.current !== -1) {
+        const prevSentenceEl = sentenceGroupRefs.current[lastSentenceGroupIndex.current];
         if (prevSentenceEl) prevSentenceEl.classList.remove("visible", "zoom-in");
       }
       lastActiveWordIndex.current = -1;
-      lastSentenceIndex.current = -1;
+      lastSentenceGroupIndex.current = -1;
     };
 
     if (video) {
@@ -537,18 +568,25 @@ export function CreatorKineticOverlay({
         .resize-handle.bottom-left { bottom: -6px; left: -6px; cursor: nesw-resize; }
         .resize-handle.bottom-right { bottom: -6px; right: -6px; cursor: nwse-resize; }
 
-        .sentence {
+        .sentence-group {
           display: none;
-          white-space: pre-wrap;
+          flex-direction: column;
+          gap: calc(var(--caption-font-size) * 0.05);
+          align-items: center;
           transform-origin: center center;
         }
 
-        .sentence.visible {
-          display: inline-block;
+        .sentence-group.visible {
+          display: flex;
         }
 
-        .sentence.zoom-in {
+        .sentence-group.zoom-in {
           animation: sentence-zoom var(--caption-zoom-duration) ease-out;
+        }
+
+        .sentence-line {
+          white-space: pre-wrap;
+          text-align: center;
         }
 
         @keyframes sentence-zoom {
@@ -632,33 +670,37 @@ export function CreatorKineticOverlay({
             <div className="resize-handle bottom-right" onMouseDown={(e) => handleResizeStart(e, 'bottom-right')} />
           </>
         )}
-        {sentences.map((sentence, sIdx) => (
+        {sentenceGroups.map((group, groupIdx) => (
           <span
-            key={sIdx}
-            className="sentence"
+            key={groupIdx}
+            className="sentence-group"
             ref={(el) => {
-              sentenceRefs.current[sIdx] = el;
+              sentenceGroupRefs.current[groupIdx] = el;
             }}
           >
-            {processedWords
-              .slice(sentence.startWordIndex, sentence.endWordIndex + 1)
-              .map((word, wIdx) => {
-                const globalIndex = sentence.startWordIndex + wIdx;
-                return (
-                  <span
-                    key={globalIndex}
-                    className="word"
-                    data-index={globalIndex}
-                    data-start={word.startSec}
-                    data-end={word.endSec}
-                    ref={(el) => {
-                      wordRefs.current[globalIndex] = el;
-                    }}
-                  >
-                    {word.text}
-                  </span>
-                );
-              })}
+            {group.sentences.map(({ sentence, sentenceIndex }) => (
+              <span key={sentenceIndex} className="sentence-line">
+                {processedWords
+                  .slice(sentence.startWordIndex, sentence.endWordIndex + 1)
+                  .map((word, wIdx) => {
+                    const globalIndex = sentence.startWordIndex + wIdx;
+                    return (
+                      <span
+                        key={globalIndex}
+                        className="word"
+                        data-index={globalIndex}
+                        data-start={word.startSec}
+                        data-end={word.endSec}
+                        ref={(el) => {
+                          wordRefs.current[globalIndex] = el;
+                        }}
+                      >
+                        {word.text}
+                      </span>
+                    );
+                  })}
+              </span>
+            ))}
           </span>
         ))}
       </div>

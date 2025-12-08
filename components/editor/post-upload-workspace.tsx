@@ -330,9 +330,7 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
 
       try {
         // Calculate custom styles for export
-        // Map percentage position (y) to ASS MarginV (pixels)
-        // We use Alignment 2 (Bottom Center) for export to handle vertical offset reliably
-        
+        const renderTemplateConfig = Templates[template.renderTemplate] || Templates.minimal
         const playResX = videoResolution?.width ?? 1920
         const playResY = videoResolution?.height ?? 1080
 
@@ -341,12 +339,20 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
         // In ASS: FontSize is relative to PlayResY (usually).
         // If we set PlayResX/Y to match VideoWidth/Height, then the coordinate system matches the video.
         // So we want the font size to be the same fraction of the width.
-        // TargetFontSize = 58 * (VideoWidth / 1920) * Scale.
-        const targetFontSize = 58 * (playResX / 1920) * overlayConfig.scale
+        const baseFontSize = renderTemplateConfig.fontSize ?? 58
+        const targetFontSize = baseFontSize * (playResX / 1920) * overlayConfig.scale
         
         // Formula: MarginV = (100 - y%) * (PlayResY / 100) - (Approx Half Text Height)
         // We approximate half text height as fontSize/2 to center the text at the y-coordinate
         const marginV = Math.max(0, Math.round((100 - overlayConfig.y) * (playResY / 100) - (targetFontSize / 2)))
+
+        const centerPercent = Math.max(0, Math.min(100, overlayConfig.y))
+        const karaokeOverrides = renderTemplateConfig.karaoke
+          ? {
+              ...renderTemplateConfig.karaoke,
+              lineCenterPercent: centerPercent,
+            }
+          : undefined
 
         const payload = {
           uploadId,
@@ -361,12 +367,13 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
           })),
           customStyles: {
             fontSize: styleOverrides.fontSize ?? Math.round(targetFontSize),
-            alignment: styleOverrides.alignment ?? 2,
+            alignment: styleOverrides.alignment ?? renderTemplateConfig.alignment ?? 2,
             marginV: styleOverrides.marginV ?? marginV,
             primaryColor: styleOverrides.primaryColor,
             outlineColor: styleOverrides.outlineColor,
             playResX,
             playResY,
+            karaoke: karaokeOverrides,
           },
           ...(transcriptId ? { transcriptId } : {}),
         }

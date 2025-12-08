@@ -21,9 +21,21 @@ const ASS_EVENTS_HEADER = `
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
 
 const CREATOR_KINETIC_MAX_WORDS_PER_LINE = 3
-const CREATOR_KINETIC_MAX_LINES_PER_CHUNK = 1
+const DEFAULT_MAX_LINES_PER_CHUNK = 1
+const DEFAULT_LINE_GAP_RATIO = 0.08
 // const CREATOR_KINETIC_MAX_CHARS_PER_LINE = 25 // Removed in favor of dynamic calculation
 type SegmentWord = NonNullable<CaptionSegment["words"]>[number]
+
+type CaptionCustomStyles = {
+  fontSize?: number
+  marginV?: number
+  alignment?: number
+  playResX?: number
+  playResY?: number
+  marginL?: number
+  marginR?: number
+  karaoke?: Partial<NonNullable<CaptionTemplate["karaoke"]>>
+}
 
 export type CaptionFile = {
   format: "srt" | "ass"
@@ -34,18 +46,25 @@ export type CaptionFile = {
 export function buildCaptionFile(
   templateId: CaptionTemplateId, 
   segments: CaptionSegment[],
-  customStyles?: { fontSize?: number; marginV?: number; alignment?: number; playResX?: number; playResY?: number; marginL?: number; marginR?: number }
+  customStyles?: CaptionCustomStyles
 ): CaptionFile {
   const baseTemplate = Templates[templateId]
   if (!baseTemplate) {
     return { format: "srt", template: templateId, content: toSrt(segments) }
   }
 
-  // Merge custom styles
-  const template = { ...baseTemplate, ...customStyles }
+  // Merge custom styles while preserving karaoke nested config
+  const { karaoke: karaokeOverrides, ...styleOverrides } = customStyles ?? {}
+  const template: CaptionTemplate = {
+    ...baseTemplate,
+    ...styleOverrides,
+    karaoke: baseTemplate.karaoke || karaokeOverrides
+      ? { ...(baseTemplate.karaoke ?? {}), ...(karaokeOverrides ?? {}) }
+      : baseTemplate.karaoke,
+  }
 
   // Calculate dynamic max chars per line
-  const playResX = customStyles?.playResX ?? 1920
+  const playResX = styleOverrides.playResX ?? 1920
   const fontSize = template.fontSize ?? 40
   const marginL = template.marginL ?? 20
   const marginR = template.marginR ?? 20
@@ -71,7 +90,7 @@ export function buildCaptionFile(
   }
 
   // Generate ASS for all defined templates
-  const content = generateAssFile(template, normalized, customStyles?.playResX, customStyles?.playResY, maxCharsPerLine)
+  const content = generateAssFile(template, normalized, styleOverrides.playResX, styleOverrides.playResY, maxCharsPerLine)
   return { format: "ass", template: templateId, content }
 }
 
@@ -80,7 +99,7 @@ function generateAssFile(template: CaptionTemplate, segments: CaptionSegment[], 
   
   let events = ""
   if (template.karaoke) {
-    events = generateKaraokeEvents(template, segments, maxCharsPerLine)
+    events = generateKaraokeEvents(template, segments, maxCharsPerLine, playResX, playResY)
   } else {
     events = generateSimpleEvents(template, segments)
   }
@@ -98,125 +117,257 @@ function generateSimpleEvents(template: CaptionTemplate, segments: CaptionSegmen
     .join("\n")
 }
 
-function generateKaraokeEvents(template: CaptionTemplate, segments: CaptionSegment[], maxCharsPerLine: number): string {
+function generateKaraokeEvents(
+  template: CaptionTemplate,
+  segments: CaptionSegment[],
+  maxCharsPerLine: number,
+  playResX?: number,
+  playResY?: number,
+): string {
   const highlightColors =
     template.karaoke?.highlightColors ??
     (template.karaoke?.highlightColor ? [template.karaoke.highlightColor] : ["#FFFF00"]);
   const cycleAfter = template.karaoke?.cycleAfterChunks ?? 2;
+  const maxLinesPerChunk = Math.max(1, template.karaoke?.maxLinesPerChunk ?? DEFAULT_MAX_LINES_PER_CHUNK);
 
+  const lineBuckets: SegmentWord[][] = [];
   const baseColorAss = toAssColor(template.primaryColor);
+
+  const pushLine = (line: SegmentWord[]) => {
+    if (line.length) {
+      lineBuckets.push(line);
+    }
+  };
+
+  segments.forEach((segment) => {
+    if (!segment.words?.length) return;
+
+    const words = segment.words as SegmentWord[];
+    let currentLine: SegmentWord[] = [];
+
+    const flushLine = () => {
+      if (currentLine.length) {
+        pushLine(currentLine);
+        currentLine = [];
+      }
+    };
+
+    words.forEach((word, idx) => {
+      const currentChars = currentLine.reduce((acc, w) => acc + w.text.length, 0);
+      const addedLen = word.text.length + (currentLine.length > 0 ? 1 : 0);
+      const exceedsChars = currentLine.length > 0 && currentChars + addedLen > maxCharsPerLine;
+      const exceedsWords = currentLine.length >= CREATOR_KINETIC_MAX_WORDS_PER_LINE;
+
+      if (exceedsChars || exceedsWords) {
+        flushLine();
+      }
+
+      currentLine.push(word);
+
+      const reachedLimit = currentLine.length >= CREATOR_KINETIC_MAX_WORDS_PER_LINE;
+      const atEnd = idx === words.length - 1;
+      if (reachedLimit || atEnd) {
+        flushLine();
+      }
+    });
+
+    flushLine();
+  });
+
+  if (!lineBuckets.length) {
+    return "";
+  }
+
+  balanceLineWordCounts(lineBuckets);
+
+  const chunkedLines: SegmentWord[][][] = [];
+  for (let i = 0; i < lineBuckets.length; i += maxLinesPerChunk) {
+    chunkedLines.push(lineBuckets.slice(i, i + maxLinesPerChunk));
+  }
+
+  if (chunkedLines.length >= 2) {
+    const lastChunk = chunkedLines[chunkedLines.length - 1];
+    if (lastChunk.length === 1) {
+      const prevChunk = chunkedLines[chunkedLines.length - 2];
+      if (prevChunk.length > 1) {
+        lastChunk.unshift(prevChunk.pop()!);
+      }
+    }
+  }
 
   let globalChunkIndex = 0;
 
-  return segments
-    .map((segment) => {
-      if (!segment.words?.length) return "";
+  return chunkedLines
+    .map((chunkLines) => {
+      if (!chunkLines.length) return "";
 
-      const words = segment.words as SegmentWord[];
+      const chunkStart = chunkLines[0][0].start;
+      const lastLine = chunkLines[chunkLines.length - 1];
+      const chunkEnd = lastLine[lastLine.length - 1].end;
 
-      // Break into lines first (keeps word groupings stable per line)
-      const lines: SegmentWord[][] = [];
-      let currentLine: SegmentWord[] = [];
-      words.forEach((word, idx) => {
-        const currentChars = currentLine.reduce((acc, w) => acc + w.text.length, 0)
-        const addedLen = word.text.length + (currentLine.length > 0 ? 1 : 0)
+      const chunkZoomIn = `\\fscx80\\fscy80\\t(0,50,\\fscx100\\fscy100)`;
+      const colorIndex = Math.floor(globalChunkIndex / cycleAfter) % highlightColors.length;
+      const highlightColorAss = toAssColor(highlightColors[colorIndex]);
 
-        if (currentLine.length > 0 && currentChars + addedLen > maxCharsPerLine) {
-          lines.push(currentLine)
-          currentLine = []
-        }
+      const renderedLineStrings = chunkLines.map((lineWords) =>
+        lineWords
+          .map((word) => {
+            const rel = Math.round((word.start - chunkStart) * 1000);
+            const dur = Math.max(10, Math.round((word.end - word.start) * 1000));
+            const highlightEnd = rel + dur;
+            const txt = escapeAssText(word.text.toUpperCase());
 
-        currentLine.push(word)
+            const base = `\\1c${baseColorAss}\\3c&H000000&\\bord0.6\\blur0.4\\shad0.15`;
+            const highlight = `\\t(${rel},${rel + 50},\\1c${highlightColorAss})`;
+            const reset = `\\t(${highlightEnd},${highlightEnd + 50},\\1c${baseColorAss})`;
 
-        const reachedLimit = currentLine.length >= CREATOR_KINETIC_MAX_WORDS_PER_LINE
-        const atEnd = idx === words.length - 1
-        if (reachedLimit || atEnd) {
-          lines.push(currentLine)
-          currentLine = []
-        }
-      })
+            return `{${chunkZoomIn}${base}${highlight}${reset}}${txt}`;
+          })
+          .join(" ")
+      );
 
-      if (currentLine.length) {
-        lines.push(currentLine);
-      }
+      const glowLineStrings = chunkLines.map((lineWords) =>
+        lineWords
+          .map((word) => {
+            const rel = Math.round((word.start - chunkStart) * 1000);
+            const dur = Math.max(10, Math.round((word.end - word.start) * 1000));
+            const highlightEnd = rel + dur;
+            const txt = escapeAssText(word.text.toUpperCase());
 
-      // Group lines into chunks of up to two lines so both render simultaneously
-      const chunkedLines: SegmentWord[][][] = [];
-      for (let i = 0; i < lines.length; i += CREATOR_KINETIC_MAX_LINES_PER_CHUNK) {
-        chunkedLines.push(lines.slice(i, i + CREATOR_KINETIC_MAX_LINES_PER_CHUNK));
-      }
+            const base = `\\alpha&H60&\\1c${highlightColorAss}\\bord0\\blur10\\shad0`;
+            const activate = `\\t(${rel},${rel + 50},\\alpha&H30&)`;
+            const deactivate = `\\t(${highlightEnd},${highlightEnd + 80},\\alpha&H60&)`;
 
-      return chunkedLines
-        .map((chunkLines) => {
-          const chunkStart = chunkLines[0][0].start;
-          const lastLine = chunkLines[chunkLines.length - 1];
-          const chunkEnd = lastLine[lastLine.length - 1].end;
+            return `{${chunkZoomIn}${base}${activate}${deactivate}}${txt}`;
+          })
+          .join(" ")
+      );
 
-          const chunkZoomIn = `\\fscx80\\fscy80\\t(0,50,\\fscx100\\fscy100)`;
-          const colorIndex = Math.floor(globalChunkIndex / cycleAfter) % highlightColors.length;
-          const highlightColorAss = toAssColor(highlightColors[colorIndex]);
+      const positionedRendered = applyCustomLineSpacing(
+        renderedLineStrings,
+        template,
+        playResX,
+        playResY,
+      );
 
-          const renderedLines = chunkLines
-            .map((lineWords) => {
-              return lineWords
-                .map((word) => {
-                  const rel = Math.round((word.start - chunkStart) * 1000);
-                  const dur = Math.max(10, Math.round((word.end - word.start) * 1000));
-                  const highlightEnd = rel + dur;
-                  const txt = escapeAssText(word.text.toUpperCase());
+      const positionedGlow = applyCustomLineSpacing(
+        glowLineStrings,
+        template,
+        playResX,
+        playResY,
+      );
 
-                  // Crisp text with subtle black outline
-                  const base = `\\1c${baseColorAss}\\3c&H000000&\\bord0.6\\blur0.4\\shad0.15`;
+      globalChunkIndex++;
 
-                  const highlight = `\\t(${rel},${rel + 50},\\1c${highlightColorAss})`;
-                  const reset = `\\t(${highlightEnd},${highlightEnd + 50},\\1c${baseColorAss})`;
-
-                  return `{${chunkZoomIn}${base}${highlight}${reset}}${txt}`;
-                })
-                .join(" ");
-            })
-            .join("\\N");
-
-          const glowLines = chunkLines
-            .map((lineWords) => {
-              return lineWords
-                .map((word) => {
-                  const rel = Math.round((word.start - chunkStart) * 1000);
-                  const dur = Math.max(10, Math.round((word.end - word.start) * 1000));
-                  const highlightEnd = rel + dur;
-                  const txt = escapeAssText(word.text.toUpperCase());
-
-                  // Stronger glow layer: Higher opacity (lower hex) and wider blur
-                  // &H60& is ~37% transparent (63% opaque), &H30& is ~19% transparent (81% opaque)
-                  const base = `\\alpha&H60&\\1c${highlightColorAss}\\bord0\\blur10\\shad0`;
-                  const activate = `\\t(${rel},${rel + 50},\\alpha&H30&)`;
-                  const deactivate = `\\t(${highlightEnd},${highlightEnd + 80},\\alpha&H60&)`;
-
-                  return `{${chunkZoomIn}${base}${activate}${deactivate}}${txt}`;
-                })
-                .join(" ");
-            })
-            .join("\\N");
-
-          globalChunkIndex++;
-
-          // Layer 0: Glow (Stronger)
+      return positionedRendered
+        .map((lineText, idx) => {
+          const glowText = positionedGlow[idx];
           const glowDialogue = `Dialogue: 0,${formatAssTimestamp(chunkStart)},${formatAssTimestamp(
             chunkEnd
-          )},${template.name},,0,0,0,,${glowLines}`;
+          )},${template.name},,0,0,0,,${glowText}`;
 
-          // Layer 1: Core Text (White/Primary)
           const coreDialogue = `Dialogue: 1,${formatAssTimestamp(chunkStart)},${formatAssTimestamp(
             chunkEnd
-          )},${template.name},,0,0,0,,${renderedLines}`;
+          )},${template.name},,0,0,0,,${lineText}`;
 
           return `${glowDialogue}\n${coreDialogue}`;
         })
         .join("\n");
     })
+    .filter(Boolean)
     .join("\n");
 }
 
+function balanceLineWordCounts(lines: SegmentWord[][]) {
+  if (lines.length < 2) return;
+  const last = lines[lines.length - 1];
+  if (last.length >= 2) return;
+
+  for (let i = lines.length - 2; i >= 0; i--) {
+    if (lines[i].length > 2) {
+      last.unshift(lines[i].pop()!);
+      return;
+    }
+  }
+}
+
+function computeLinePositions(
+  lineCount: number,
+  template: CaptionTemplate,
+  playResX?: number,
+  playResY?: number,
+) {
+  const safePlayResX = playResX ?? 1920;
+  const safePlayResY = playResY ?? 1080;
+
+  // ULTRA TIGHT SPACING
+  const ratio = Math.max(0.001, template.karaoke?.lineGapRatio ?? 0.005);
+  const fontSize = template.fontSize ?? 58;
+
+  // Keep lines extremely close while still rendered as distinct rows
+  const step = Math.max(24, Math.round(fontSize * ratio * 2.2));
+
+  const centerX = Math.round(safePlayResX / 2);
+  const positions: number[] = [];
+
+  const centerPercent = template.karaoke?.lineCenterPercent;
+  if (typeof centerPercent === "number" && Number.isFinite(centerPercent)) {
+    const clamped = Math.max(0, Math.min(100, centerPercent));
+    const centerY = (clamped / 100) * safePlayResY;
+    const totalSpan = step * (lineCount - 1);
+    const first = centerY - totalSpan / 2;
+    for (let i = 0; i < lineCount; i++) {
+      positions.push(Math.round(first + i * step));
+    }
+    return { centerX, positions };
+  }
+
+  const alignment = template.alignment ?? 2;
+  const verticalBand = alignment <= 3 ? "bottom" : alignment <= 6 ? "middle" : "top";
+  const marginV = template.marginV ?? 50;
+
+  if (verticalBand === "bottom") {
+    const base = safePlayResY - marginV;
+    for (let i = 0; i < lineCount; i++) {
+      const offset = (lineCount - 1 - i) * step;
+      positions.push(Math.round(base - offset));
+    }
+  } else if (verticalBand === "top") {
+    for (let i = 0; i < lineCount; i++) {
+      positions.push(Math.round(marginV + i * step));
+    }
+  } else {
+    const centerY = safePlayResY / 2;
+    const totalSpan = step * (lineCount - 1);
+    const first = centerY - totalSpan / 2;
+    for (let i = 0; i < lineCount; i++) {
+      positions.push(Math.round(first + i * step));
+    }
+  }
+
+  return { centerX, positions };
+}
+
+function applyCustomLineSpacing(
+  lineStrings: string[],
+  template: CaptionTemplate,
+  playResX?: number,
+  playResY?: number,
+): string[] {
+  if (!lineStrings.length) return [];
+
+  const { centerX, positions } = computeLinePositions(
+    lineStrings.length,
+    template,
+    playResX,
+    playResY,
+  );
+
+  return lineStrings.map((line, idx) => {
+    const targetY = positions[idx] ?? positions[positions.length - 1];
+    return `{\\pos(${centerX},${Math.round(targetY)})}${line}`;
+  });
+}
 
 
 // -----------------------------------------------------------------------
@@ -266,7 +417,7 @@ function chunkWordsForCenter(words: NonNullable<CaptionSegment["words"]>): NonNu
     // Check if adding this word exceeds line length limit
     if (currentLineLength + wordLen > MAX_CHARS) {
       // If we are already at max lines, push chunk and start new
-      if (currentLines >= CREATOR_KINETIC_MAX_LINES_PER_CHUNK) {
+      if (currentLines >= DEFAULT_MAX_LINES_PER_CHUNK) {
         chunks.push(currentChunk)
         currentChunk = [word]
         currentLineLength = wordLen
@@ -283,7 +434,7 @@ function chunkWordsForCenter(words: NonNullable<CaptionSegment["words"]>): NonNu
       currentLineLength += wordLen + 1 // +1 for space
       
       // Check word count limit per chunk
-      if (currentChunk.length >= CREATOR_KINETIC_MAX_WORDS_PER_LINE * CREATOR_KINETIC_MAX_LINES_PER_CHUNK) {
+      if (currentChunk.length >= CREATOR_KINETIC_MAX_WORDS_PER_LINE * DEFAULT_MAX_LINES_PER_CHUNK) {
         chunks.push(currentChunk)
         currentChunk = []
         currentLineLength = 0

@@ -71,6 +71,16 @@ export type TranscriptPayload = {
   segments: CaptionSegment[]
 }
 
+const karaokeOverrideSchema = z.object({
+  highlightColor: z.string().optional(),
+  highlightColors: z.array(z.string()).optional(),
+  cycleAfterChunks: z.number().optional(),
+  maxLinesPerChunk: z.number().optional(),
+  lineGapRatio: z.number().optional(),
+  lineCenterPercent: z.number().optional(),
+  mode: z.enum(["word", "syllable"]).optional(),
+})
+
 export const captionRequestSchema = z.object({
   uploadId: z.string().min(1),
   template: z.enum(CAPTION_TEMPLATES),
@@ -84,6 +94,10 @@ export const captionRequestSchema = z.object({
     alignment: z.number().optional(),
     playResX: z.number().optional(),
     playResY: z.number().optional(),
+    primaryColor: z.string().optional(),
+    outlineColor: z.string().optional(),
+    shadowColor: z.string().optional(),
+    karaoke: karaokeOverrideSchema.optional(),
   }).optional(),
 })
 

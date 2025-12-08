@@ -17,6 +17,12 @@ export interface CaptionTemplate {
     highlightColors?: string[]
     // Number of chunks to show before cycling to the next color (default 2)
     cycleAfterChunks?: number
+    // Limit how many sentence lines render simultaneously (default 1)
+    maxLinesPerChunk?: number
+    // Relative gap between stacked lines (multiplier of font size)
+    lineGapRatio?: number
+    // Desired vertical center for stacked lines (percentage of frame height)
+    lineCenterPercent?: number
     mode: "word" | "syllable"
   }
 }

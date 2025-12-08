@@ -43,10 +43,12 @@ export const Templates: Record<string, CaptionTemplate> = {
     karaoke: {
       highlightColors: ["#70e2ff", "#ffe83f", "#9fff5b"],
       cycleAfterChunks: 2,
+      maxLinesPerChunk: 2,
+      lineGapRatio: 0.005,
       mode: "word",
     },
     alignment: 5,
-    marginV: 50,
+    marginV: 60,
     uppercase: true,
   },
   sportGlow: {

@@ -1,21 +1,12 @@
-import { getDb } from "@/lib/mongodb"
-import { getCurrentUser } from "@/lib/auth"
+import { createClient } from "@/lib/supabase/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { ObjectId } from "mongodb"
-
-const wordSchema = z.object({
-  text: z.string(),
-  start: z.number(),
-  end: z.number(),
-})
 
 const segmentSchema = z.object({
-  id: z.union([z.string(), z.number()]).optional(),
+  id: z.string().optional(),
   start: z.number().optional(),
   end: z.number().optional(),
   text: z.string(),
-  words: z.array(wordSchema).optional(),
 })
 
 const requestSchema = z.object({
@@ -25,66 +16,62 @@ const requestSchema = z.object({
 })
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
-  const db = await getDb()
+  const supabase = await createClient()
 
   try {
     const body = requestSchema.parse(await request.json())
-    const user = await getCurrentUser()
-    const userId = user?.userId || "default-user"
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
 
     const { id: transcriptId } = await context.params
 
-    if (!ObjectId.isValid(transcriptId)) {
-      return NextResponse.json({ error: "Invalid transcript ID" }, { status: 400 })
-    }
+    const { data: transcript, error: transcriptError } = await supabase
+      .from("transcripts")
+      .select("id, upload_id, user_id, source_language")
+      .eq("id", transcriptId)
+      .eq("user_id", user.id)
+      .single()
 
-    const transcript = await db.collection("transcripts").findOne({
-      _id: new ObjectId(transcriptId),
-      user_id: userId,
-    })
-
-    if (!transcript) {
+    if (transcriptError || !transcript) {
       return NextResponse.json({ error: "Transcript not found" }, { status: 404 })
     }
 
     const normalizedSegments = normalizeSegments(body.segments, body.text)
     const flattenedWords = normalizedSegments.flatMap((segment) => segment.words ?? [])
 
-    const updateResult = await db.collection("transcripts").findOneAndUpdate(
-      { _id: new ObjectId(transcriptId) },
-      {
-        $set: {
-          text: body.text,
-          source_language: body.language ?? transcript.source_language,
-          segments: normalizedSegments,
-          words: flattenedWords,
-          updated_at: new Date(),
-        },
-      },
-      { returnDocument: "after" }
-    )
+    const { data: updatedTranscript, error: updateError } = await supabase
+      .from("transcripts")
+      .update({
+        text: body.text,
+        source_language: body.language ?? transcript.source_language,
+        segments: normalizedSegments,
+        words: flattenedWords,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", transcriptId)
+      .select("id, text, segments, source_language")
+      .single()
 
-    if (!updateResult) {
+    if (updateError || !updatedTranscript) {
+      console.error("Failed to update transcript", updateError)
       return NextResponse.json({ error: "Could not update transcript" }, { status: 500 })
     }
 
-    const updatedTranscript = updateResult
-
-    await db.collection("uploads").updateOne(
-      { _id: new ObjectId(transcript.upload_id) },
-      {
-        $set: {
-          latest_transcript_id: transcriptId,
-          updated_at: new Date(),
-        },
-      }
-    )
+    await supabase
+      .from("uploads")
+      .update({
+        latest_transcript_id: transcriptId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", transcript.upload_id)
 
     return NextResponse.json({
-      transcript: {
-        ...updatedTranscript,
-        id: updatedTranscript._id.toString(),
-      },
+      transcript: updatedTranscript,
     })
   } catch (error) {
     console.error("Transcript update error", error)
@@ -108,11 +95,11 @@ function normalizeSegments(
     const text = segment.text.trim()
 
     return {
-      id: segment.id ? String(segment.id) : `segment_${index}`,
+      id: segment.id ?? `segment_${index}`,
       start,
       end,
       text,
-      words: segment.words?.length ? segment.words : distributeWordsEvenly(text, start, end),
+      words: distributeWordsEvenly(text, start, end),
     }
   })
 }

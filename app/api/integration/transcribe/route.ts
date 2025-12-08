@@ -174,9 +174,9 @@ async function pollAssemblyAI(
           id: `seg_${idx}`,
           start: word.start / 1000,
           end: word.end / 1000,
-          text: word.text.replace(/\./g, ""),
+          text: word.text,
           words: [{
-            text: word.text.replace(/\./g, ""),
+            text: word.text,
             start: word.start / 1000,
             end: word.end / 1000
           }]
@@ -189,7 +189,7 @@ async function pollAssemblyAI(
             $set: {
               status: "completed",
               segments,
-              text: data.text.replace(/\./g, ""),
+              text: data.text,
               confidence: data.confidence || 0.95,
               updated_at: new Date()
             }
@@ -266,7 +266,7 @@ async function mockTranscription(
       $set: {
         status: "completed",
         segments: mockSegments,
-        text: "Hello world This is a test video",
+        text: "Hello world. This is a test video.",
         confidence: 0.95,
         updated_at: new Date()
       }

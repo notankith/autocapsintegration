@@ -1,0 +1,155 @@
+import "dotenv/config"
+import { ObjectId } from "mongodb"
+import jwt from "jsonwebtoken"
+import { getDb } from "../lib/mongodb"
+import { buildCaptionFile } from "../lib/captions"
+import { buildEmojiOverlaysFromSegments } from "../lib/emoji-overlays"
+import { uploadFile } from "../lib/oracle-storage"
+import {
+  STORAGE_PREFIX,
+  RENDER_RESOLUTIONS,
+  type CaptionSegment,
+} from "../lib/pipeline"
+
+async function fetchLatestTranscript(
+  db: Awaited<ReturnType<typeof getDb>>,
+  uploadId: string,
+  userId: string,
+) {
+  const transcript = await db
+    .collection("transcripts")
+    .find({ upload_id: uploadId, user_id: userId })
+    .sort({ created_at: -1 })
+    .limit(1)
+    .next()
+
+  if (!transcript) {
+    throw new Error(`No transcript found for upload ${uploadId}`)
+  }
+
+  return transcript as { _id: ObjectId; segments: CaptionSegment[] }
+}
+
+async function main() {
+  const uploadId = process.argv[2]
+  if (!uploadId) {
+    console.error("Usage: tsx scripts/trigger-render.ts <uploadId>")
+    process.exit(1)
+  }
+
+  const db = await getDb()
+  const upload = await db.collection("uploads").findOne({ _id: new ObjectId(uploadId) })
+  if (!upload) {
+    throw new Error(`Upload ${uploadId} not found`)
+  }
+
+  const userId = upload.user_id || "default-user"
+  const transcript = await fetchLatestTranscript(db, uploadId, userId)
+  const segments = transcript.segments as CaptionSegment[]
+
+  const resolutionConfig = RENDER_RESOLUTIONS["1080p"]
+  const customStyles = {
+    playResX: resolutionConfig.width,
+    playResY: resolutionConfig.height,
+  }
+
+  const captionFile = buildCaptionFile("karaoke", segments, customStyles)
+  const captionBuffer = Buffer.from(captionFile.content, "utf-8")
+  const overlays = buildEmojiOverlaysFromSegments(segments)
+
+  const basePayload = {
+    template: "karaoke" as const,
+    resolution: "1080p" as const,
+    transcriptId: transcript._id.toString(),
+    translationId: null,
+    videoPath: upload.storage_path,
+    captionPath: "",
+    segmentsProvided: true,
+    segmentCount: segments.length,
+    overlays,
+  }
+
+  const jobResult = await db.collection("jobs").insertOne({
+    upload_id: upload._id.toString(),
+    user_id: userId,
+    type: "render",
+    payload: basePayload,
+    status: "queued",
+    created_at: new Date(),
+  })
+
+  const jobId = jobResult.insertedId.toString()
+  const captionPath = `${STORAGE_PREFIX.captions}/${userId}/${upload._id.toString()}/${jobId}.${captionFile.format}`
+
+  await db.collection("jobs").updateOne(
+    { _id: jobResult.insertedId },
+    { $set: { payload: { ...basePayload, captionPath } } },
+  )
+
+  await uploadFile(
+    captionPath,
+    captionBuffer,
+    captionFile.format === "srt" ? "text/plain" : "text/x-ass",
+  )
+
+  await db.collection("uploads").updateOne(
+    { _id: upload._id },
+    {
+      $set: {
+        status: "rendering",
+        caption_asset_path: captionPath,
+        updated_at: new Date(),
+      },
+    },
+  )
+
+  const workerUrl = process.env.FFMPEG_WORKER_URL
+  const workerSecret = process.env.WORKER_JWT_SECRET
+
+  if (!workerUrl || !workerSecret) {
+    throw new Error("Worker configuration missing")
+  }
+
+  const token = jwt.sign({ jobId, uploadId }, workerSecret, { expiresIn: "10m" })
+
+  const renderPayload = {
+    jobId,
+    uploadId,
+    videoPath: upload.storage_path,
+    captionPath,
+    captionFormat: captionFile.format,
+    template: "karaoke",
+    resolution: "1080p",
+    outputPath: `${STORAGE_PREFIX.renders}/${userId}/${jobId}/rendered.mp4`,
+    overlays,
+  }
+
+  const workerResponse = await fetch(`${workerUrl}/render`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(renderPayload),
+  })
+
+  if (!workerResponse.ok) {
+    const reason = await workerResponse.text()
+    await db.collection("jobs").updateOne(
+      { _id: jobResult.insertedId },
+      { $set: { status: "failed", error: reason } },
+    )
+    throw new Error(`Worker rejected job: ${reason}`)
+  }
+
+  console.log("Queued job", {
+    jobId,
+    captionPath,
+    outputPath: renderPayload.outputPath,
+  })
+}
+
+main().catch((err) => {
+  console.error(err)
+  process.exit(1)
+})

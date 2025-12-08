@@ -146,7 +146,7 @@ export function generateASS(template: CaptionTemplate): string {
   // Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
   // We assume SecondaryColour = Primary (unless karaoke), BackColour = ShadowColor
   
-  return `Style: ${name},${fontFamily},${fontSize},${primary},${primary},${outline},${shadow},-1,0,0,0,100,100,0,0,1,${outlineWidth},${shadowWidth},${alignment},40,40,${marginV},1`
+  return `Style: ${name},${fontFamily},${fontSize},${primary},${primary},${outline},${shadow},-1,0,0,0,100,100,0,0,1,${outlineWidth},${shadowWidth},${alignment},-10,40,${marginV},1`
 }
 
 export function toAssColor(hex: string): string {
