@@ -12,13 +12,30 @@ export default async function WorkspacePage({ params }: { params: Promise<{ id: 
 
   const db = await getDb()
   
-  const upload = await db.collection("uploads").findOne({
-    _id: new ObjectId(resolvedParams.id),
-    user_id: userId
-  })
+  // Look up upload by ID only so workspace links are resolvable by others
+  // Security: allow public access only if upload exists and is not in pending state
+  let upload
+  try {
+    upload = await db.collection("uploads").findOne({ _id: new ObjectId(resolvedParams.id) })
+  } catch (err) {
+    console.log(`[Workspace] Invalid upload id: ${resolvedParams.id}`)
+    redirect("/dashboard")
+  }
 
   if (!upload) {
-    console.log(`[Workspace] Upload not found. ID: ${resolvedParams.id}, User: ${userId}`)
+    console.log(`[Workspace] Upload not found. ID: ${resolvedParams.id}`)
+    redirect("/dashboard")
+  }
+
+  // If the upload is still pending (client didn't finish upload), we don't expose the workspace
+  if (upload.status === "pending_upload") {
+    console.log(`[Workspace] Upload pending and not ready. ID: ${resolvedParams.id}`)
+    redirect("/dashboard")
+  }
+
+  // Respect expiration if set
+  if (upload.expires_at && new Date() > new Date(upload.expires_at)) {
+    console.log(`[Workspace] Upload expired. ID: ${resolvedParams.id}`)
     redirect("/dashboard")
   }
 

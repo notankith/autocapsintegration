@@ -13,10 +13,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
   let upload
   try {
-    upload = await db.collection("uploads").findOne({
-      _id: new ObjectId(id),
-      user_id: userId,
-    })
+    // Lookup by id only so recipients can request render URL
+    upload = await db.collection("uploads").findOne({ _id: new ObjectId(id) })
   } catch (error) {
     return NextResponse.json({ error: "Invalid upload ID format" }, { status: 400 })
   }
@@ -30,6 +28,16 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 
   const signedUrl = getPublicUrl(upload.render_asset_path)
+
+  // Optionally confirm the rendered asset is present and update DB if needed
+  try {
+    const headResp = await fetch(signedUrl, { method: "HEAD" })
+    if (!headResp.ok) {
+      return NextResponse.json({ error: "Rendered asset not available" }, { status: 404 })
+    }
+  } catch (err) {
+    console.warn("Render-url HEAD check failed", err)
+  }
 
   return NextResponse.json({ signedUrl })
 }
