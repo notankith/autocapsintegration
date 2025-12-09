@@ -44,7 +44,7 @@ export const Templates: Record<string, CaptionTemplate> = {
       highlightColors: ["#70e2ff", "#ffe83f", "#9fff5b"],
       cycleAfterChunks: 2,
       maxLinesPerChunk: 2,
-      lineGapRatio: 0.005,
+      lineGapRatio: 0.22,
       mode: "word",
     },
     alignment: 5,

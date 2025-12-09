@@ -497,8 +497,8 @@ function runFfmpeg(
       const scaledLabel = `ovsc${i}`;
       const start = Math.max(0, ov.start);
       const end = Math.max(start, ov.end);
-      // Scale GIF to 50px width (smaller) and add subtle wiggle
-      const width = 75;
+      // Scale GIF to requested width (fallback to 75px) and add subtle wiggle
+      const width = (ov as any).width ?? 75;
       // Wiggle: +/- 3deg (0.05rad), speed 5. c=none preserves transparency.
       // ow/oh increased to prevent clipping during rotation.
       filterParts.push(`[${inputIndex}:v] scale=${width}:-1,rotate=a='0.05*sin(5*t)':ow='iw*1.2':oh='ih*1.2':c=none [${scaledLabel}]`);
@@ -512,17 +512,17 @@ function runFfmpeg(
       let startYExpr = "";
 
       if (template === "karaoke") {
-         // Text center is main_h/2. Text top ~ main_h/2 - 40.
-         // Target: Above text (closer).
-         targetYExpr = `(main_h/2)-25-overlay_h`;
-         // Start: Center of text.
-         startYExpr = `(main_h/2)-(overlay_h/2)`;
+        // Text center is main_h/2. Text top ~ main_h/2 - 40.
+        // Target: Above text (closer). Move target slightly more upwards for stronger final rise.
+        targetYExpr = `(main_h/2)-45-overlay_h`;
+        // Start: Center of text.
+        startYExpr = `(main_h/2)-(overlay_h/2)`;
       } else {
-         // Text bottom is approx main_h - 50. Text top ~ main_h - 110.
-         // Target: Above text (closer).
-         targetYExpr = `main_h-105-overlay_h`;
-         // Start: Center of text (approx main_h - 80).
-         startYExpr = `main_h-80-(overlay_h/2)`;
+        // Text bottom is approx main_h - 50. Text top ~ main_h - 110.
+        // Target: Above text (closer). Move target slightly more upwards for stronger final rise.
+        targetYExpr = `main_h-125-overlay_h`;
+        // Start: Center of text (approx main_h - 80).
+        startYExpr = `main_h-80-(overlay_h/2)`;
       }
       
       // Animation: Rise up from startY to targetY over 0.4s

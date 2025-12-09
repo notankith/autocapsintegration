@@ -22,7 +22,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
 
 const CREATOR_KINETIC_MAX_WORDS_PER_LINE = 3
 const DEFAULT_MAX_LINES_PER_CHUNK = 1
-const DEFAULT_LINE_GAP_RATIO = 0.08
+const DEFAULT_LINE_GAP_RATIO = 1.12
 // const CREATOR_KINETIC_MAX_CHARS_PER_LINE = 25 // Removed in favor of dynamic calculation
 type SegmentWord = NonNullable<CaptionSegment["words"]>[number]
 
@@ -301,11 +301,11 @@ function computeLinePositions(
   const safePlayResY = playResY ?? 1080;
 
   // ULTRA TIGHT SPACING
-  const ratio = Math.max(0.001, template.karaoke?.lineGapRatio ?? 0.005);
+  const ratio = Math.max(0.01, template.karaoke?.lineGapRatio ?? DEFAULT_LINE_GAP_RATIO);
   const fontSize = template.fontSize ?? 58;
 
   // Keep lines extremely close while still rendered as distinct rows
-  const step = Math.max(24, Math.round(fontSize * ratio * 2.2));
+  const step = Math.max(32, Math.round(fontSize * ratio * 3.2));
 
   const centerX = Math.round(safePlayResX / 2);
   const positions: number[] = [];

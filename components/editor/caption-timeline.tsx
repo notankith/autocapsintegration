@@ -19,9 +19,18 @@ export function CaptionTimeline({
   onAddCaption,
 }: CaptionTimelineProps) {
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, "0")}`
+    const total = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0
+    const mins = Math.floor(total / 60)
+    const secs = Math.floor(total % 60)
+    // centiseconds per requirement
+    const cs = Math.floor((total % 1) * 100)
+
+    const mStr = String(mins).padStart(2, "0")
+    const sStr = String(secs).padStart(2, "0")
+    const csStr = String(cs).padStart(2, "0")
+
+    // Timeline format: mm:ss:cc (minutes:seconds:centiseconds)
+    return `${mStr}:${sStr}:${csStr}`
   }
 
   return (

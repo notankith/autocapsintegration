@@ -1496,10 +1496,18 @@ function cloneWord(word: CaptionWord): CaptionWord {
 }
 
 function formatTimestamp(value: number) {
-  if (!Number.isFinite(value)) return "0:00"
-  const mins = Math.floor(value / 60)
-  const secs = Math.floor(value % 60)
-  return `${mins}:${secs.toString().padStart(2, "0")}`
+  if (!Number.isFinite(value) || value < 0) return "00:00:00"
+  const total = value
+  const mins = Math.floor(total / 60)
+  const secs = Math.floor(total % 60)
+  const cs = Math.floor((total % 1) * 100)
+
+  const mStr = String(mins).padStart(2, "0")
+  const sStr = String(secs).padStart(2, "0")
+  const csStr = String(cs).padStart(2, "0")
+
+  // Timeline format: mm:ss:cc
+  return `${mStr}:${sStr}:${csStr}`
 }
 
 function createDefaultOverlayConfig(): OverlayConfig {

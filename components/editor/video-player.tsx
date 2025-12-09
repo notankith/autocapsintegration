@@ -70,9 +70,19 @@ export function VideoPlayer({
   }, [currentTime])
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, "0")}`
+    const total = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0
+    const h = Math.floor(total / 3600)
+    const m = Math.floor((total % 3600) / 60)
+    const s = Math.floor(total % 60)
+    // centiseconds per requirement: Math.floor((seconds % 1) * 100)
+    const cs = Math.floor((total % 1) * 100)
+
+    const mStr = String(m).padStart(2, "0")
+    const sStr = String(s).padStart(2, "0")
+    const csStr = String(cs).padStart(2, "0")
+
+    // Format: H:MM:SS.CC (hours not zero-padded)
+    return `${h}:${mStr}:${sStr}.${csStr}`
   }
 
   const togglePlay = () => {
@@ -156,20 +166,21 @@ export function VideoPlayer({
         )}
         {activeOverlay && (
           <div
-            className="absolute left-4 z-30 pointer-events-none"
-            style={{
-              top: typeof overlayTop === "number" ? `${overlayTop}px` : overlayTop ?? "50%",
-              transform: "translateY(-50%)",
-              width: 220,
-              maxWidth: "25%",
-            }}
-          >
-            <img
-              src="https://raw.githubusercontent.com/notankith/cloudinarytest/refs/heads/main/Money.gif"
-              alt="overlay"
-              style={{ width: "100%", height: "auto", display: "block" }}
-            />
-          </div>
+              className="absolute left-4 z-30 pointer-events-none"
+              style={{
+                top: typeof overlayTop === "number" ? `${overlayTop}px` : overlayTop ?? "50%",
+                // end position lifted a bit higher so the riser finishes slightly above previous placement
+                transform: "translateY(-60%)",
+                width: 260, // slightly larger preview emoji
+                maxWidth: "25%",
+              }}
+            >
+              <img
+                src="https://raw.githubusercontent.com/notankith/cloudinarytest/refs/heads/main/Money.gif"
+                alt="overlay"
+                style={{ width: "100%", height: "auto", display: "block" }}
+              />
+            </div>
         )}
       </div>
 

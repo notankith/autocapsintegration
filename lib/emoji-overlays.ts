@@ -90,7 +90,7 @@ export function buildEmojiOverlaysFromSegments(segments: CaptionSegment[]): Rend
           start: segment.start,
           end: segment.end,
           x: 0,
-          width: 100,
+          width: 140, // slightly larger emoji size
         })
       }
     })
