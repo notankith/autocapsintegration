@@ -1,6 +1,8 @@
-import { createClient } from "@/lib/supabase/server"
+import { getDb } from "@/lib/mongodb"
+import { getCurrentUser } from "@/lib/auth"
 import { type NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
+import { ObjectId } from "mongodb"
 
 const segmentSchema = z.object({
   id: z.string().optional(),
@@ -13,66 +15,72 @@ const requestSchema = z.object({
   text: z.string().trim().min(1, "Transcript text is required"),
   language: z.string().min(2).optional(),
   segments: z.array(segmentSchema).optional(),
+  userId: z.string().optional(),
 })
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient()
+  const db = await getDb()
 
   try {
     const body = requestSchema.parse(await request.json())
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const user = await getCurrentUser()
+    const userId = user?.userId || body.userId || "default-user"
 
     const { id: transcriptId } = await context.params
 
-    const { data: transcript, error: transcriptError } = await supabase
-      .from("transcripts")
-      .select("id, upload_id, user_id, source_language")
-      .eq("id", transcriptId)
-      .eq("user_id", user.id)
-      .single()
+    let transcript
+    try {
+      transcript = await db.collection("transcripts").findOne({ _id: new ObjectId(transcriptId), user_id: userId })
+    } catch (err) {
+      return NextResponse.json({ error: "Transcript not found" }, { status: 404 })
+    }
 
-    if (transcriptError || !transcript) {
+    if (!transcript) {
       return NextResponse.json({ error: "Transcript not found" }, { status: 404 })
     }
 
     const normalizedSegments = normalizeSegments(body.segments, body.text)
     const flattenedWords = normalizedSegments.flatMap((segment) => segment.words ?? [])
 
-    const { data: updatedTranscript, error: updateError } = await supabase
-      .from("transcripts")
-      .update({
-        text: body.text,
-        source_language: body.language ?? transcript.source_language,
-        segments: normalizedSegments,
-        words: flattenedWords,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", transcriptId)
-      .select("id, text, segments, source_language")
-      .single()
+    const updateResult = await db.collection("transcripts").updateOne(
+      { _id: new ObjectId(transcriptId) },
+      {
+        $set: {
+          text: body.text,
+          source_language: body.language ?? transcript.source_language ?? null,
+          segments: normalizedSegments,
+          words: flattenedWords,
+          updated_at: new Date(),
+        },
+      }
+    )
 
-    if (updateError || !updatedTranscript) {
-      console.error("Failed to update transcript", updateError)
+    if (!updateResult.matchedCount) {
       return NextResponse.json({ error: "Could not update transcript" }, { status: 500 })
     }
 
-    await supabase
-      .from("uploads")
-      .update({
-        latest_transcript_id: transcriptId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", transcript.upload_id)
+    // Update uploads.latest_transcript_id if possible
+    try {
+      if (transcript.upload_id) {
+        await db.collection("uploads").updateOne(
+          { _id: new ObjectId(transcript.upload_id) },
+          { $set: { latest_transcript_id: transcriptId, updated_at: new Date() } }
+        )
+      }
+    } catch (err) {
+      // Non-fatal: log and continue
+      console.warn("Failed to update uploads.latest_transcript_id", err)
+    }
 
-    return NextResponse.json({
-      transcript: updatedTranscript,
-    })
+    const updatedTranscript = {
+      id: transcriptId,
+      text: body.text,
+      segments: normalizedSegments,
+      source_language: body.language ?? transcript.source_language ?? null,
+    }
+
+    return NextResponse.json({ transcript: updatedTranscript })
   } catch (error) {
     console.error("Transcript update error", error)
     if (error instanceof z.ZodError) {

@@ -39,9 +39,16 @@ export function Sidebar() {
         <Button
           variant="outline"
           className="w-full justify-start gap-3 bg-transparent"
-          onClick={() => {
-            fetch("/api/auth/logout", { method: "POST" })
-            window.location.href = "/"
+          onClick={async () => {
+            try {
+              await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" })
+            } catch (err) {
+              // Intentionally fall through to redirect even if logout API fails
+              console.warn("Logout request failed", err)
+            } finally {
+              // Strict redirect to login page
+              window.location.href = "/auth/login"
+            }
           }}
         >
           <LogOut className="w-5 h-5" />
