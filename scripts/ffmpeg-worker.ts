@@ -341,11 +341,12 @@ async function processJob(payload: RenderJobPayload) {
       last_render_transcript_id: originatingTranscriptId,
     })
 
-    // Also update any export job record (render_jobs) that referenced this uploadId
+    // Also update the most-recent export job record (render_jobs) that referenced this uploadId
     try {
-      const renderJob = await db.collection("render_jobs").findOne({ uploadId: payload.uploadId })
+      const renderJob = await db.collection("render_jobs").findOne({ uploadId: payload.uploadId }, { sort: { createdAt: -1 } })
       if (renderJob) {
-      await db.collection("render_jobs").updateOne({ _id: renderJob._id }, { $set: { status: "rendered", renderedVideoUrl: downloadUrl, updatedAt: new Date(), captionHash: captionHash ?? null, lastRenderTranscriptId: originatingTranscriptId ?? null } })
+        // Mark as rendered and attach the download URL
+        await db.collection("render_jobs").updateOne({ _id: renderJob._id }, { $set: { status: "rendered", renderedVideoUrl: downloadUrl, updatedAt: new Date(), captionHash: captionHash ?? null, lastRenderTranscriptId: originatingTranscriptId ?? null } })
 
         // Prepare portal POST payload
         const portalUrl = process.env.PORTAL_EXPORT_URL || renderJob.targetPortal
@@ -389,6 +390,8 @@ async function processJob(payload: RenderJobPayload) {
             }
           }
         }
+      } else {
+        console.log("[worker] No render_jobs row found for uploadId, skipping portal export", { uploadId: payload.uploadId })
       }
     } catch (err) {
       console.warn("[worker] Failed to update render_jobs or notify portal", err)
