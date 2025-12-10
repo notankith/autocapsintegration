@@ -9,11 +9,7 @@ import { useRouter } from "next/navigation"
 
 export default function DashboardPage() {
   const [file, setFile] = useState<File | null>(null)
-  const [title, setTitle] = useState("")
-  const [hasTranscript, setHasTranscript] = useState(false)
-  const [transcriptText, setTranscriptText] = useState("")
-  const [rawTranscriptJson, setRawTranscriptJson] = useState("")
-  const [transcriptLanguage, setTranscriptLanguage] = useState("en")
+  const [description, setDescription] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -31,9 +27,7 @@ export default function DashboardPage() {
       setFile(selectedFile)
       setError(null)
       setSuccess(false)
-      if (!title) {
-        setTitle(selectedFile.name.replace(/\.[^/.]+$/, ""))
-      }
+      // leave description empty for user to fill
     }
   }
 
@@ -55,13 +49,8 @@ export default function DashboardPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!file || !title) {
-      setError("Please select a video and enter a title")
-      return
-    }
-
-    if (hasTranscript && !transcriptText.trim() && !rawTranscriptJson.trim()) {
-      setError("Paste transcript text or raw JSON")
+    if (!file || !description.trim()) {
+      setError("Please select a video and enter a video description")
       return
     }
 
@@ -73,9 +62,7 @@ export default function DashboardPage() {
 
     try {
       const prepared = await prepareSignedUpload(file, {
-        title,
-        hasTranscript,
-        transcript: hasTranscript ? transcriptText : undefined,
+        description,
       })
       setStatusMessage("Uploading to Oracle Object Storage...")
       await uploadFileWithProgress(
@@ -84,27 +71,13 @@ export default function DashboardPage() {
         (progress) => setUploadProgress(Math.min(progress, 99)),
       )
 
-      if (!hasTranscript) {
-        setStatusMessage("Transcribing with AssemblyAI...")
-        await startTranscription(prepared.uploadId, undefined, { useMocks: USE_MOCK_TRANSCRIPTION })
-      } else {
-        setStatusMessage("Saving provided transcript...")
-        const overridePayload = buildManualOverridePayload({
-          transcriptText,
-          rawTranscriptJson,
-          language: transcriptLanguage,
-        })
-        await startTranscription(prepared.uploadId, overridePayload, { useMocks: USE_MOCK_TRANSCRIPTION })
-      }
+      setStatusMessage("Transcribing with AssemblyAI...")
+      await startTranscription(prepared.uploadId, undefined, { useMocks: USE_MOCK_TRANSCRIPTION })
 
       setSuccess(true)
       setUploadProgress(100)
       setFile(null)
-      setTitle("")
-      setTranscriptText("")
-      setRawTranscriptJson("")
-      setTranscriptLanguage("en")
-      setHasTranscript(false)
+      setDescription("")
 
       setTimeout(() => {
         router.push(`/dashboard/workspace/${prepared.uploadId}`)
@@ -157,87 +130,21 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Video Title */}
+          {/* Video Description */}
           <div>
-            <label htmlFor="title" className="block text-sm font-semibold mb-2">
-              Video Title
+            <label htmlFor="description" className="block text-sm font-semibold mb-2">
+              Video Description
             </label>
-            <Input
-              id="title"
-              placeholder="My Amazing Video"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+            <textarea
+              id="description"
+              placeholder="Add a short description for the video (required)"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-4 py-3 border border-input rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none text-base"
+              rows={4}
               required
-              className="text-base h-11"
             />
           </div>
-
-          {/* Transcript Toggle */}
-          <div className="bg-card border border-border rounded-xl p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <input
-                type="checkbox"
-                id="transcript-toggle"
-                checked={hasTranscript}
-                onChange={(e) => setHasTranscript(e.target.checked)}
-                className="w-5 h-5 cursor-pointer accent-primary"
-              />
-              <label htmlFor="transcript-toggle" className="font-semibold cursor-pointer">
-                I already have a transcript
-              </label>
-              <FileText className="w-5 h-5 text-muted-foreground ml-auto" />
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {hasTranscript
-                ? "Paste your transcript below to skip automatic transcription"
-                : "If you don't have one, we'll generate it automatically using AI"}
-            </p>
-          </div>
-
-          {/* Transcript Input - Conditional Render */}
-          {hasTranscript && (
-            <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
-              <label htmlFor="transcript" className="block text-sm font-semibold">
-                Paste your transcript
-              </label>
-              <textarea
-                id="transcript"
-                placeholder="Paste your video transcript here..."
-                value={transcriptText}
-                onChange={(e) => setTranscriptText(e.target.value)}
-                className="w-full px-4 py-3 border border-input rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent resize-none text-base"
-                rows={6}
-              />
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold" htmlFor="transcript-language">
-                  Transcript language code
-                </label>
-                <Input
-                  id="transcript-language"
-                  value={transcriptLanguage}
-                  onChange={(e) => setTranscriptLanguage(e.target.value)}
-                  placeholder="en"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold" htmlFor="transcript-json">
-                  Raw transcript JSON (optional)
-                </label>
-                <textarea
-                  id="transcript-json"
-                  placeholder="Paste the raw AssemblyAI JSON response..."
-                  value={rawTranscriptJson}
-                  onChange={(e) => setRawTranscriptJson(e.target.value)}
-                  className="w-full px-4 py-3 border border-input rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent resize-none text-sm font-mono"
-                  rows={6}
-                />
-                <p className="text-xs text-muted-foreground">JSON takes precedence when both fields are provided.</p>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Make sure your transcript is accurately formatted for the best results
-              </p>
-            </div>
-          )}
 
           {statusMessage && (
             <div className="bg-secondary/30 border border-secondary rounded-lg p-4 text-sm flex items-center justify-between">
@@ -272,7 +179,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <Upload className="w-5 h-5 mr-2" />
-                {hasTranscript ? "Upload with Transcript" : "Upload & Auto-Transcribe"}
+                Upload & Auto-Transcribe
               </>
             )}
           </Button>

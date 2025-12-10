@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process"
 import jwt from "jsonwebtoken"
+import crypto from "crypto"
 import { MongoClient, ObjectId, type Db } from "mongodb"
 import { STORAGE_PREFIX, RENDER_RESOLUTIONS, type CaptionTemplate, type RenderOverlay } from "@/lib/pipeline"
 import "dotenv/config"
@@ -234,6 +235,17 @@ async function processJob(payload: RenderJobPayload) {
         console.log(`[worker] Copying font from ${sourceFontPath} to ${fontDest}`)
         await fs.copyFile(sourceFontPath, fontDest)
         
+        // Also create a copy with the expected internal family name as filename
+        // Some libass/font lookup setups match on filename; providing this alias increases reliability.
+        try {
+          const altName = "THE BOLD FONT (FREE VERSION).ttf"
+          const altDest = join(uniqueFontDir, altName)
+          await fs.copyFile(sourceFontPath, altDest)
+          console.log(`[worker] Also copied font to alias filename ${altDest}`)
+        } catch (e) {
+          console.warn("[worker] Failed to create alias font file", e)
+        }
+
         fontsDir = uniqueFontDir
         console.log("[worker] Copied font to unique temp dir:", fontsDir)
       } catch (e) {
@@ -307,18 +319,91 @@ async function processJob(payload: RenderJobPayload) {
       downloadUrl,
       storagePath: payload.outputPath,
     })
-
     await updateJob(jobId, {
       status: "done",
       completed_at: new Date(),
       result: { ...jobResultState },
     })
 
+    // Compute caption hash for the caption file we downloaded earlier so
+    // we can detect whether future renders need to run.
+    let captionHash: string | null = null
+    try {
+      const captionBuf = await fs.readFile(captionTmp)
+      captionHash = crypto.createHash("sha256").update(captionBuf).digest("hex")
+    } catch (e) {
+      console.warn("[worker] Failed to compute caption hash", e)
+    }
+
+    // Attempt to read the originating job payload to capture transcript id
+    let originatingTranscriptId: string | null = null
+    try {
+      const jobDoc = await db.collection("jobs").findOne({ _id: new ObjectId(jobId) })
+      originatingTranscriptId = jobDoc?.payload?.transcriptId ?? null
+    } catch (e) {
+      console.warn("[worker] Failed to read job document for transcriptId", e)
+    }
+
     await updateUploadRenderState(payload.uploadId, {
       status: "rendered",
       render_asset_path: payload.outputPath,
       updated_at: new Date(),
+      render_caption_hash: captionHash,
+      last_render_transcript_id: originatingTranscriptId,
     })
+
+    // Also update any export job record (render_jobs) that referenced this uploadId
+    try {
+      const renderJob = await db.collection("render_jobs").findOne({ uploadId: payload.uploadId })
+      if (renderJob) {
+      await db.collection("render_jobs").updateOne({ _id: renderJob._id }, { $set: { status: "rendered", renderedVideoUrl: downloadUrl, updatedAt: new Date(), captionHash: captionHash ?? null, lastRenderTranscriptId: originatingTranscriptId ?? null } })
+
+        // Prepare portal POST payload
+        const portalUrl = process.env.PORTAL_EXPORT_URL || renderJob.targetPortal
+        if (portalUrl) {
+          const exportPayload = {
+            fileName: renderJob.fileName || payload.outputPath.split("/").pop(),
+            description: renderJob.description || "",
+            renderedVideoUrl: downloadUrl,
+            source: "AutoCaptions",
+            jobId: renderJob._id.toString(),
+          }
+
+          // Attempt to POST to portal with retries (max 3 attempts)
+          const maxAttempts = 3
+          let attempts = renderJob.attempts ?? 0
+          const workerAuth = WORKER_SECRET
+
+          for (; attempts < maxAttempts; attempts++) {
+            try {
+              const headers: Record<string, string> = { "Content-Type": "application/json" }
+              if (workerAuth) headers["Authorization"] = `Bearer ${workerAuth}`
+              if (process.env.PORTAL_SECRET) headers["x-portal-secret"] = process.env.PORTAL_SECRET
+
+              console.log("[worker] POSTing export payload to portal", { portalUrl, jobId: renderJob._id.toString() })
+              const resp = await fetch(portalUrl, { method: "POST", headers, body: JSON.stringify(exportPayload) })
+              if (resp.ok) {
+                await db.collection("render_jobs").updateOne({ _id: renderJob._id }, { $set: { status: "exported", attempts: attempts + 1, lastAttemptAt: new Date() } })
+                console.log("[worker] Exported render to portal", portalUrl)
+                break
+              } else {
+                const text = await resp.text().catch(() => "")
+                console.warn(`[worker] Portal responded with ${resp.status}: ${text}`)
+                // update attempts and schedule nextAttemptAt
+                const retryDelayMs = Math.pow(2, attempts) * 60 * 1000 // exponential backoff: 60s,120s,240s
+                await db.collection("render_jobs").updateOne({ _id: renderJob._id }, { $set: { status: "export_failed", attempts: attempts + 1, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + retryDelayMs), lastError: text } })
+              }
+            } catch (err) {
+              console.error("[worker] Failed to POST to portal", err)
+              const retryDelayMs = Math.pow(2, attempts) * 60 * 1000
+              await db.collection("render_jobs").updateOne({ _id: renderJob._id }, { $set: { status: "export_failed", attempts: attempts + 1, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + retryDelayMs), lastError: String(err) } })
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[worker] Failed to update render_jobs or notify portal", err)
+    }
 
     console.log("[worker] Job completed", { jobId })
 
@@ -443,8 +528,11 @@ function runFfmpeg(
   // Build subtitles filter string
   const subtitlesFilter = (() => {
     if (fmt === "ass") {
-      const fontsDirParam = template === "karaoke" ? `:fontsdir=${escapedFontsDir}` : "";
-      return `subtitles='${escapedCaptions}${fontsDirParam}'`;
+        const fontsDirParam = template === "karaoke" ? `:fontsdir=${escapedFontsDir}` : "";
+        // Also apply the forceStyle override for ASS in case libass doesn't pick up the font by family name.
+        // The subtitles filter supports both fontsdir and force_style options.
+        const escapedForceStyle = forceStyle ? `:force_style=${forceStyle.replace(/'/g, "\\'")}` : "";
+        return `subtitles='${escapedCaptions}${fontsDirParam}${escapedForceStyle}'`;
     } else if (forceStyle) {
       return `subtitles='${escapedCaptions}:force_style=${forceStyle}'`;
     } else {

@@ -1,5 +1,6 @@
 import "dotenv/config"
 import { ObjectId } from "mongodb"
+import crypto from "crypto"
 import jwt from "jsonwebtoken"
 import { getDb } from "../lib/mongodb"
 import { buildCaptionFile } from "../lib/captions"
@@ -30,13 +31,7 @@ async function fetchLatestTranscript(
   return transcript as { _id: ObjectId; segments: CaptionSegment[] }
 }
 
-async function main() {
-  const uploadId = process.argv[2]
-  if (!uploadId) {
-    console.error("Usage: tsx scripts/trigger-render.ts <uploadId>")
-    process.exit(1)
-  }
-
+export async function createAndTriggerJob(uploadId: string) {
   const db = await getDb()
   const upload = await db.collection("uploads").findOne({ _id: new ObjectId(uploadId) })
   if (!upload) {
@@ -57,6 +52,10 @@ async function main() {
   const captionBuffer = Buffer.from(captionFile.content, "utf-8")
   const overlays = buildEmojiOverlaysFromSegments(segments)
 
+  // Compute a deterministic hash of the caption file so we can detect
+  // whether a previous render already used the same captions.
+  const captionHash = crypto.createHash("sha256").update(captionFile.content, "utf8").digest("hex")
+
   const basePayload = {
     template: "karaoke" as const,
     resolution: "1080p" as const,
@@ -67,6 +66,18 @@ async function main() {
     segmentsProvided: true,
     segmentCount: segments.length,
     overlays,
+  }
+
+  // If we already have a rendered asset and the caption hash matches,
+  // skip creating a new render job and reuse the last render.
+  if (upload.render_asset_path && upload.render_caption_hash && upload.render_caption_hash === captionHash) {
+    console.log(`Skipping render for upload ${uploadId}; existing rendered asset matches caption hash.`)
+    return {
+      skipped: true,
+      renderedPath: upload.render_asset_path,
+      renderedUrl: null,
+      captionHash,
+    }
   }
 
   const jobResult = await db.collection("jobs").insertOne({
@@ -147,9 +158,25 @@ async function main() {
     captionPath,
     outputPath: renderPayload.outputPath,
   })
+
+  return { jobId, captionPath, outputPath: renderPayload.outputPath }
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+async function main() {
+  const uploadId = process.argv[2]
+  if (!uploadId) {
+    console.error("Usage: tsx scripts/trigger-render.ts <uploadId>")
+    process.exit(1)
+  }
+
+  try {
+    await createAndTriggerJob(uploadId)
+  } catch (err) {
+    console.error(err)
+    process.exit(1)
+  }
+}
+
+if (require.main === module) {
+  main()
+}

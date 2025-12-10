@@ -8,7 +8,7 @@ import { TemplateSelector } from "./template-selector"
 import { StyleEditor } from "./style-editor"
 import { type TemplateOption, type CaptionTemplate } from "@/components/templates/types"
 import { defaultTemplates, findTemplateById, Templates } from "@/components/templates/data"
-import { Download, Pause, Play, Plus, Search, Trash2, Copy } from "lucide-react"
+import { Download, Pause, Play, Plus, Search, Trash2, Copy, Upload } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type CaptionSegment, type CaptionWord } from "@/lib/pipeline"
 import { SimpleCaptionOverlay } from "./caption-overlays"
@@ -120,6 +120,8 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
   const [styleOverrides, setStyleOverrides] = useState<Partial<CaptionTemplate>>({})
   const [isApplyingTemplate, setIsApplyingTemplate] = useState(false)
   const [isDispatchingRender, setIsDispatchingRender] = useState(false)
+  const [isSendingToPortal, setIsSendingToPortal] = useState(false)
+  const [portalMessage, setPortalMessage] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string | null>(null)
   const [jobMessage, setJobMessage] = useState<string | null>(null)
@@ -696,6 +698,42 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
     void enqueueRenderJob(selectedTemplateOption)
   }
 
+  const handleSendToPortal = useCallback(async () => {
+    setIsSendingToPortal(true)
+    setPortalMessage(null)
+    try {
+      const fileName = preview?.upload?.title ?? `upload-${uploadId}.mp4`
+      // Prefer the user-provided video description saved on the upload metadata.
+      const savedDescription = (preview?.upload?.metadata as any)?.description
+      const description = (typeof savedDescription === "string" && savedDescription.trim().length)
+        ? String(savedDescription).slice(0, 2000)
+        : captionSegments.map((s) => s.text).join(" \n").slice(0, 1000)
+
+      if (!savedDescription || !String(savedDescription).trim()) {
+        setPortalMessage("Please provide a video description before sending to portal.")
+        setIsSendingToPortal(false)
+        setTimeout(() => setPortalMessage(null), 4000)
+        return
+      }
+
+      const resp = await fetch("/api/export/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadId, fileName, description }),
+      })
+
+      const body = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(body?.message ?? "Failed to create export job")
+
+      setPortalMessage(`Export job queued (id: ${body.jobId})`)
+    } catch (err) {
+      setPortalMessage(err instanceof Error ? err.message : "Failed to send to portal")
+    } finally {
+      setIsSendingToPortal(false)
+      setTimeout(() => setPortalMessage(null), 6000)
+    }
+  }, [uploadId, preview, captionSegments])
+
   const exportButtonLabel = downloadUrl && jobStatus === "done"
     ? "Download render"
     : jobId
@@ -890,6 +928,24 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
             >
               <Download className="h-4 w-4" />
               {exportButtonLabel}
+            </Button>
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={() => void handleSendToPortal()}
+              disabled={isSendingToPortal}
+            >
+              {isSendingToPortal ? (
+                <>
+                  <Upload className="w-4 h-4 animate-pulse" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4" />
+                  Send to Portal
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -1514,6 +1570,8 @@ function createDefaultOverlayConfig(): OverlayConfig {
   return {
     scale: 3.35,
     x: 50,
-    y: 50,
+    // Move default vertical anchor down a bit (percent from top).
+    // 50 is center; 70 places captions lower but not at extreme bottom.
+    y: 70,
   }
 }

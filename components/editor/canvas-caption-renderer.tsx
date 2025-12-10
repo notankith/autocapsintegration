@@ -132,7 +132,15 @@ function drawCaption(
   let y = height - marginV
 
   if (alignment === 5) {
-    y = height / 2
+    // If the template includes a karaoke.centerPercent override, respect it
+    // for preview positioning so the preview matches final render placement.
+    const centerPercent = (template as any)?.karaoke?.lineCenterPercent
+    if (typeof centerPercent === 'number' && Number.isFinite(centerPercent)) {
+      const clamped = Math.max(0, Math.min(100, centerPercent))
+      y = (clamped / 100) * height
+    } else {
+      y = height / 2
+    }
     ctx.textBaseline = "middle"
   } else if (alignment === 8) {
     y = marginV

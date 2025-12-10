@@ -28,12 +28,7 @@ interface VideoUploadFormProps {
 
 export function VideoUploadForm({ onComplete }: VideoUploadFormProps = {}) {
   const [file, setFile] = useState<File | null>(null)
-  const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [hasTranscript, setHasTranscript] = useState(false)
-  const [transcriptText, setTranscriptText] = useState("")
-  const [rawTranscriptJson, setRawTranscriptJson] = useState("")
-  const [transcriptLanguage, setTranscriptLanguage] = useState("en")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
@@ -51,21 +46,13 @@ export function VideoUploadForm({ onComplete }: VideoUploadFormProps = {}) {
       }
       setFile(selectedFile)
       setError(null)
-      if (!title) {
-        setTitle(selectedFile.name.replace(/\.[^/.]+$/, ""))
-      }
     }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!file || !title) {
-      setError("Please select a video and enter a title")
-      return
-    }
-
-    if (hasTranscript && !transcriptText.trim() && !rawTranscriptJson.trim()) {
-      setError("Provide transcript text or paste the transcript JSON response")
+    if (!file || !description.trim()) {
+      setError("Please select a video and enter a video description")
       return
     }
 
@@ -76,39 +63,22 @@ export function VideoUploadForm({ onComplete }: VideoUploadFormProps = {}) {
     setUploadProgress(0)
 
     try {
-      const prepared = await prepareSignedUpload(file, title, description)
+      const prepared = await prepareSignedUpload(file, description)
       setStatusMessage("Uploading to Oracle Object Storage...")
       await uploadFileWithProgress(
         prepared,
         file,
         (progress) => setUploadProgress(Math.min(progress, 99)),
       )
-
-      let transcription: TranscriptionResult
-      if (hasTranscript) {
-        setStatusMessage("Saving provided transcript...")
-        const overridePayload = buildManualOverridePayload({
-          transcriptText,
-          rawTranscriptJson,
-          language: transcriptLanguage,
-        })
-        transcription = await startTranscription(prepared.uploadId, overridePayload, {
-          useMocks: USE_MOCK_TRANSCRIPTION,
-        })
-      } else {
-        setStatusMessage("Transcribing with AssemblyAI...")
-        transcription = await startTranscription(prepared.uploadId, undefined, {
-          useMocks: USE_MOCK_TRANSCRIPTION,
-        })
-      }
+      setStatusMessage("Transcribing with AssemblyAI...")
+      const transcription = await startTranscription(prepared.uploadId, undefined, {
+        useMocks: USE_MOCK_TRANSCRIPTION,
+      })
 
       setUploadProgress(100)
       setStatusMessage("Transcription complete")
       setSuccessMessage("Upload successful! Redirecting to editor...")
-      setHasTranscript(false)
-      setTranscriptText("")
-      setRawTranscriptJson("")
-      setTranscriptLanguage("en")
+      // keep description for session; user-provided description is saved as upload.metadata on the server
 
       setTimeout(() => {
         if (onComplete) {
@@ -139,66 +109,15 @@ export function VideoUploadForm({ onComplete }: VideoUploadFormProps = {}) {
       </div>
 
       <div>
-        <label className="block text-sm font-medium mb-2">Video Title</label>
-        <Input placeholder="My Amazing Video" value={title} onChange={(e) => setTitle(e.target.value)} required />
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium mb-2">Description (Optional)</label>
+        <label className="block text-sm font-medium mb-2">Video Description</label>
         <textarea
-          placeholder="Add a description..."
+          placeholder="Add a short description for the video (required)"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
           rows={4}
+          required
         />
-      </div>
-
-      <div className="space-y-4 rounded-lg border border-border p-4">
-        <div className="flex items-center gap-3">
-          <input
-            id="has-transcript"
-            type="checkbox"
-            className="h-4 w-4"
-            checked={hasTranscript}
-            onChange={(event) => setHasTranscript(event.target.checked)}
-          />
-          <label htmlFor="has-transcript" className="font-medium">
-            I already have the transcript response
-          </label>
-        </div>
-
-        {hasTranscript && (
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-2">Transcript language code (e.g. en, es)</label>
-              <Input value={transcriptLanguage} onChange={(e) => setTranscriptLanguage(e.target.value)} />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-sm font-medium">Transcript text (fallback)</label>
-              <textarea
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                rows={4}
-                value={transcriptText}
-                onChange={(e) => setTranscriptText(e.target.value)}
-                placeholder="Paste a plain-text transcript if you do not have the raw AssemblyAI JSON"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-sm font-medium">Raw transcript JSON (optional)</label>
-              <textarea
-                className="w-full rounded-md border border-input bg-background font-mono text-xs px-3 py-2"
-                rows={6}
-                value={rawTranscriptJson}
-                onChange={(e) => setRawTranscriptJson(e.target.value)}
-                placeholder='Paste the full response from AssemblyAI (e.g. { "text": "...", "words": [...] })'
-              />
-              <p className="text-xs text-muted-foreground">If both JSON and text are provided, JSON takes precedence.</p>
-            </div>
-          </div>
-        )}
       </div>
 
       {error && (
@@ -244,7 +163,7 @@ export function VideoUploadForm({ onComplete }: VideoUploadFormProps = {}) {
   )
 }
 
-async function prepareSignedUpload(file: File, title: string, description: string) {
+async function prepareSignedUpload(file: File, description: string) {
   const response = await fetch("/api/videos/upload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -253,7 +172,6 @@ async function prepareSignedUpload(file: File, title: string, description: strin
       fileType: file.type,
       fileSize: file.size,
       metadata: {
-        title,
         description,
       },
     }),
