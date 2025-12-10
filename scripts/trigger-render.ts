@@ -31,7 +31,7 @@ async function fetchLatestTranscript(
   return transcript as { _id: ObjectId; segments: CaptionSegment[] }
 }
 
-export async function createAndTriggerJob(uploadId: string) {
+export async function createAndTriggerJob(uploadId: string, options?: { segments?: CaptionSegment[]; customStyles?: any; transcriptId?: string }) {
   const db = await getDb()
   const upload = await db.collection("uploads").findOne({ _id: new ObjectId(uploadId) })
   if (!upload) {
@@ -39,18 +39,28 @@ export async function createAndTriggerJob(uploadId: string) {
   }
 
   const userId = upload.user_id || "default-user"
-  const transcript = await fetchLatestTranscript(db, uploadId, userId)
-  const segments = transcript.segments as CaptionSegment[]
+
+  // Allow client-provided segments (live editor) to be used instead of DB transcript
+  let segments: CaptionSegment[]
+  let transcriptId: string | null = null
+  if (options && Array.isArray(options.segments) && options.segments.length > 0) {
+    segments = options.segments as CaptionSegment[]
+    transcriptId = options.transcriptId ?? null
+  } else {
+    const transcript = await fetchLatestTranscript(db, uploadId, userId)
+    segments = transcript.segments as CaptionSegment[]
+    transcriptId = transcript._id.toString()
+  }
 
   const resolutionConfig = RENDER_RESOLUTIONS["1080p"]
-  const customStyles = {
+  const customStyles = options?.customStyles ?? {
     playResX: resolutionConfig.width,
     playResY: resolutionConfig.height,
   }
 
   const captionFile = buildCaptionFile("karaoke", segments, customStyles)
   const captionBuffer = Buffer.from(captionFile.content, "utf-8")
-  const overlays = buildEmojiOverlaysFromSegments(segments)
+  const overlays = buildEmojiOverlaysFromSegments(segments, customStyles)
 
   // Compute a deterministic hash of the caption file so we can detect
   // whether a previous render already used the same captions.
@@ -59,7 +69,7 @@ export async function createAndTriggerJob(uploadId: string) {
   const basePayload = {
     template: "karaoke" as const,
     resolution: "1080p" as const,
-    transcriptId: transcript._id.toString(),
+    transcriptId: transcriptId,
     translationId: null,
     videoPath: upload.storage_path,
     captionPath: "",

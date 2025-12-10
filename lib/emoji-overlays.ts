@@ -76,8 +76,29 @@ const EMOJI_MAP: Record<string, string> = {
   "thumbs-up": "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f44d.png",
 }
 
-export function buildEmojiOverlaysFromSegments(segments: CaptionSegment[]): RenderOverlay[] {
+export function buildEmojiOverlaysFromSegments(
+  segments: CaptionSegment[],
+  customStyles?: {
+    playResX?: number
+    playResY?: number
+    marginV?: number
+    emojiOffsetPx?: number
+    emojiRiseMs?: number
+    emojiSize?: number
+  }
+): RenderOverlay[] {
   const overlays: RenderOverlay[] = []
+
+  const playResY = customStyles?.playResY ?? 1080
+  const marginV = typeof customStyles?.marginV === "number" ? customStyles!.marginV! : 50
+
+  // base is the caption baseline reference used by caption generator: base = playResY - marginV
+  const captionBase = Math.round(playResY - marginV)
+
+  const defaultOffset = Math.round(playResY * 0.03) || 30
+  const emojiOffset = typeof customStyles?.emojiOffsetPx === "number" ? customStyles!.emojiOffsetPx! : defaultOffset
+  const riseMs = typeof customStyles?.emojiRiseMs === "number" ? customStyles!.emojiRiseMs! : 400
+  const emojiSize = typeof customStyles?.emojiSize === "number" ? customStyles!.emojiSize! : 140
 
   segments.forEach((segment) => {
     const tokens = segment.text.toLowerCase().split(/\s+/)
@@ -85,13 +106,21 @@ export function buildEmojiOverlaysFromSegments(segments: CaptionSegment[]): Rend
       const clean = token.replace(/[^a-z0-9-]/g, "")
       const emojiUrl = EMOJI_MAP[clean]
       if (emojiUrl) {
+        // targetY: place emoji slightly below the caption baseline (so it appears under the text)
+        // then the worker will animate it upward a bit for a small rise effect.
+        const targetY = captionBase + emojiOffset
+
         overlays.push({
           url: emojiUrl,
           start: segment.start,
           end: segment.end,
           x: 0,
-          width: 140, // slightly larger emoji size
-        })
+          y: targetY,
+          width: emojiSize,
+          // include the source playResY and rise duration so the worker can scale coordinates and animate
+          playResY,
+          riseMs,
+        } as any)
       }
     })
   })

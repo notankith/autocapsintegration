@@ -48,6 +48,10 @@ export type RenderOverlay = {
   height?: number
   // Optional local path (worker downloads external files and sets this)
   path?: string
+  // Source playResY (pixels) used when overlay positions are computed client-side
+  playResY?: number
+  // Rise animation duration in milliseconds
+  riseMs?: number
 }
 
 const captionWordSchema = z.object({
@@ -96,6 +100,10 @@ export const captionRequestSchema = z.object({
     playResY: z.number().optional(),
     primaryColor: z.string().optional(),
     outlineColor: z.string().optional(),
+    // Emoji config: pixel offset below caption baseline, rise animation duration (ms), and default emoji size (px)
+    emojiOffsetPx: z.number().optional(),
+    emojiRiseMs: z.number().optional(),
+    emojiSize: z.number().optional(),
     shadowColor: z.string().optional(),
     karaoke: karaokeOverrideSchema.optional(),
   }).optional(),

@@ -25,7 +25,7 @@ type RenderJobPayload = {
   outputPath: string
   videoUrl?: string
   captionUrl?: string
-  overlays?: Array<{ url: string; start: number; end: number; x?: number; y?: number; width?: number; height?: number }>
+  overlays?: Array<{ url: string; start: number; end: number; x?: number; y?: number; width?: number; height?: number; playResY?: number }>
 }
 
 const WORKER_SECRET = process.env.WORKER_JWT_SECRET
@@ -209,7 +209,7 @@ async function processJob(payload: RenderJobPayload) {
           const ext = extMatch ? extMatch[1] : "gif"
           const overlayTmp = join(tmpdir(), `${jobId}-overlay-${i}.${ext}`)
           await downloadToFile(ov.url, overlayTmp)
-          overlayFiles.push({ url: ov.url, path: overlayTmp, start: ov.start, end: ov.end, x: ov.x, y: ov.y, width: ov.width, height: ov.height })
+          overlayFiles.push({ url: ov.url, path: overlayTmp, start: ov.start, end: ov.end, x: ov.x, y: ov.y, width: ov.width, height: ov.height, playResY: ov.playResY, riseMs: (ov as any).riseMs })
         } catch (err) {
           console.warn(`[worker] Failed to download overlay ${ov.url} — skipping`, err)
         }
@@ -235,17 +235,6 @@ async function processJob(payload: RenderJobPayload) {
         console.log(`[worker] Copying font from ${sourceFontPath} to ${fontDest}`)
         await fs.copyFile(sourceFontPath, fontDest)
         
-        // Also create a copy with the expected internal family name as filename
-        // Some libass/font lookup setups match on filename; providing this alias increases reliability.
-        try {
-          const altName = "THE BOLD FONT (FREE VERSION).ttf"
-          const altDest = join(uniqueFontDir, altName)
-          await fs.copyFile(sourceFontPath, altDest)
-          console.log(`[worker] Also copied font to alias filename ${altDest}`)
-        } catch (e) {
-          console.warn("[worker] Failed to create alias font file", e)
-        }
-
         fontsDir = uniqueFontDir
         console.log("[worker] Copied font to unique temp dir:", fontsDir)
       } catch (e) {
@@ -528,11 +517,8 @@ function runFfmpeg(
   // Build subtitles filter string
   const subtitlesFilter = (() => {
     if (fmt === "ass") {
-        const fontsDirParam = template === "karaoke" ? `:fontsdir=${escapedFontsDir}` : "";
-        // Also apply the forceStyle override for ASS in case libass doesn't pick up the font by family name.
-        // The subtitles filter supports both fontsdir and force_style options.
-        const escapedForceStyle = forceStyle ? `:force_style=${forceStyle.replace(/'/g, "\\'")}` : "";
-        return `subtitles='${escapedCaptions}${fontsDirParam}${escapedForceStyle}'`;
+      const fontsDirParam = template === "karaoke" ? `:fontsdir=${escapedFontsDir}` : "";
+      return `subtitles='${escapedCaptions}${fontsDirParam}'`;
     } else if (forceStyle) {
       return `subtitles='${escapedCaptions}:force_style=${forceStyle}'`;
     } else {
@@ -594,29 +580,42 @@ function runFfmpeg(
       // Center horizontally
       const x = `(main_w-overlay_w)/2`;
       
-      // Dynamic Y position with rise-up animation
-      // We assume text is roughly 60px tall.
+      // Dynamic Y position with rise-up animation. Prefer explicit overlay Y if provided.
+      // If the overlay object contains a numeric `y`, use that as the final target (in pixels).
+      // Start position will be below that (larger Y) and animate upward to the target for a subtle rise effect.
       let targetYExpr = "";
       let startYExpr = "";
 
-      if (template === "karaoke") {
-        // Text center is main_h/2. Text top ~ main_h/2 - 40.
-        // Target: Above text (closer). Move target slightly more upwards for stronger final rise.
-        targetYExpr = `(main_h/2)-45-overlay_h`;
-        // Start: Center of text.
-        startYExpr = `(main_h/2)-(overlay_h/2)`;
+      if (typeof (ov as any).y === "number") {
+        // Use provided pixel Y as target. Scale from source playResY -> actual video main_h.
+        const srcPlayResY = (ov as any).playResY ?? (_res && String(_res).includes("x") ? String(_res).split("x")[1] : "1080")
+        // targetY = ov.y * (main_h / srcPlayResY)
+        targetYExpr = `(${(ov as any).y})*(main_h/${srcPlayResY})`;
+        // Start slightly below target (by overlay_h + 30 pixels)
+        startYExpr = `(${targetYExpr})+overlay_h+30`;
       } else {
-        // Text bottom is approx main_h - 50. Text top ~ main_h - 110.
-        // Target: Above text (closer). Move target slightly more upwards for stronger final rise.
-        targetYExpr = `main_h-125-overlay_h`;
-        // Start: Center of text (approx main_h - 80).
-        startYExpr = `main_h-80-(overlay_h/2)`;
+        // Fallback legacy behavior: compute based on template
+        if (template === "karaoke") {
+          // Text center is main_h/2. Text top ~ main_h/2 - 40.
+          // Target: Above text (closer). Move target slightly more upwards for stronger final rise.
+          targetYExpr = `(main_h/2)-45-overlay_h`;
+          // Start: Center of text.
+          startYExpr = `(main_h/2)-(overlay_h/2)`;
+        } else {
+          // Text bottom is approx main_h - 50. Text top ~ main_h - 110.
+          // Target: Above text (closer). Move target slightly more upwards for stronger final rise.
+          targetYExpr = `main_h-125-overlay_h`;
+          // Start: Center of text (approx main_h - 80).
+          startYExpr = `main_h-80-(overlay_h/2)`;
+        }
       }
-      
-      // Animation: Rise up from startY to targetY over 0.4s
+
+      // Animation: Rise up from startY to targetY over `riseMs` milliseconds (default 400ms)
       // y = startY + (targetY - startY) * progress
       // IMPORTANT: Wrap the expression in single quotes to prevent argument parsing issues
-      let y = `'${startYExpr}+(${targetYExpr}-(${startYExpr}))*min(1,(t-${start})/0.4)'`;
+      const riseMs = (ov as any).riseMs ?? 400
+      const riseSeconds = Math.max(0.05, Number((riseMs / 1000).toFixed(3)))
+      let y = `'${startYExpr}+(${targetYExpr}-(${startYExpr}))*min(1,(t-${start})/${riseSeconds})'`;
 
       const prevLabel = i === 0 ? "base" : `v${i}`;
       const outLabel = `v${i + 1}`;

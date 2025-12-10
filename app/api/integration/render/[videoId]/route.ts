@@ -99,13 +99,15 @@ export async function POST(request: NextRequest, context: { params: Promise<{ vi
       return NextResponse.json({ error: "Upload not found" }, { status: 404 })
     }
 
-    const captionFile = buildCaptionFile(template, captionSet.segments, {
+    const finalCustomStyles = {
       playResX: resolutionConfig.width,
       playResY: resolutionConfig.height,
-    })
+    }
+
+    const captionFile = buildCaptionFile(template, captionSet.segments, finalCustomStyles)
     const captionBuffer = Buffer.from(captionFile.content, "utf-8")
 
-    const overlays = buildEmojiOverlaysFromSegments(captionSet.segments)
+    const overlays = buildEmojiOverlaysFromSegments(captionSet.segments, finalCustomStyles)
     console.log(`[Integration Render] Generated ${overlays.length} overlays for ${videoId}`)
 
     const basePayload = {

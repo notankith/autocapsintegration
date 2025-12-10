@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 })
 
-  const { uploadId, fileName, description } = body
+  const { uploadId, fileName, description, portalId } = body
   if (!uploadId || !fileName) {
     return NextResponse.json({ success: false, message: "Missing uploadId or fileName" }, { status: 400 })
   }
@@ -26,7 +26,12 @@ export async function POST(req: NextRequest) {
   // an existing rendered asset can be reused (skip).
   let triggerResult: any
   try {
-    triggerResult = await createAndTriggerJob(String(uploadId))
+    // Allow client to provide current segments/customStyles so Send-to-Portal
+    // uses the live editor state instead of a DB snapshot.
+    const opts: any = {}
+    if (body.segments) opts.segments = body.segments
+    if (body.customStyles) opts.customStyles = body.customStyles
+    triggerResult = await createAndTriggerJob(String(uploadId), Object.keys(opts).length ? opts : undefined)
   } catch (err) {
     console.error("Failed to trigger render for export job (create step)", err)
     return NextResponse.json({ success: false, message: "Failed to create render job" }, { status: 500 })
@@ -34,11 +39,25 @@ export async function POST(req: NextRequest) {
 
   // Prepare the render_jobs document. If the trigger returned a skip result,
   // mark as rendered and attach the rendered URL. Otherwise insert as queued.
+  const resolvedPortalUrl = (() => {
+    try {
+      if (portalId) {
+        // If portalId is 'default' fall back to single env
+        if (portalId === "default") return process.env.PORTAL_EXPORT_URL || null
+        const key = `PORTAL_EXPORT_URL_${String(portalId)}`
+        return process.env[key] || null
+      }
+      return process.env.PORTAL_EXPORT_URL || null
+    } catch (e) {
+      return process.env.PORTAL_EXPORT_URL || null
+    }
+  })()
+
   const jobDoc: any = {
     uploadId: String(uploadId),
     fileName: String(fileName),
     description: description ? String(description) : "",
-    targetPortal: process.env.PORTAL_EXPORT_URL || null,
+    targetPortal: resolvedPortalUrl,
     attempts: 0,
     createdAt: new Date(),
   }

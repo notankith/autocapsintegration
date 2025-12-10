@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
     const captionFile = buildCaptionFile(body.template, captionSource.segments, finalCustomStyles)
     const captionBuffer = Buffer.from(captionFile.content, "utf-8")
 
-    const overlays = buildEmojiOverlaysFromSegments(captionSource.segments)
+    const overlays = buildEmojiOverlaysFromSegments(captionSource.segments, finalCustomStyles)
     console.log(`[API] Generated ${overlays.length} emoji overlays`)
 
     const basePayload = {

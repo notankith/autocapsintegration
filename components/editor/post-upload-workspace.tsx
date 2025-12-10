@@ -86,7 +86,8 @@ type PreviewSession = {
     id: string
     title: string
     templateId: string | null
-    language: string | null
+      language: string | null
+      metadata?: any
     lastRenderedUrl?: string | null
   }
   video: {
@@ -122,6 +123,9 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
   const [isDispatchingRender, setIsDispatchingRender] = useState(false)
   const [isSendingToPortal, setIsSendingToPortal] = useState(false)
   const [portalMessage, setPortalMessage] = useState<string | null>(null)
+  const [portalList, setPortalList] = useState<Array<{ id: string; name: string; url: string }>>([])
+  const [showPortalChooser, setShowPortalChooser] = useState(false)
+  const [selectedPortalId, setSelectedPortalId] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string | null>(null)
   const [jobMessage, setJobMessage] = useState<string | null>(null)
@@ -376,6 +380,10 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
             playResX,
             playResY,
             karaoke: karaokeOverrides,
+            // Emoji knobs (defaults)
+            emojiOffsetPx: Math.round(playResY * 0.005),
+            emojiRiseMs: 200,
+            emojiSize: Math.round(80 * (playResX / 1920) * overlayConfig.scale),
           },
           ...(transcriptId ? { transcriptId } : {}),
         }
@@ -699,9 +707,14 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
   }
 
   const handleSendToPortal = useCallback(async () => {
-    setIsSendingToPortal(true)
     setPortalMessage(null)
     try {
+      // Auto-save any unsaved transcript changes before exporting
+      if (transcriptId && !isSavingTranscript) {
+        // Await save so server-side export sees latest segments
+        await handleSaveTranscript()
+      }
+
       const fileName = preview?.upload?.title ?? `upload-${uploadId}.mp4`
       // Prefer the user-provided video description saved on the upload metadata.
       const savedDescription = (preview?.upload?.metadata as any)?.description
@@ -711,21 +724,88 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
 
       if (!savedDescription || !String(savedDescription).trim()) {
         setPortalMessage("Please provide a video description before sending to portal.")
-        setIsSendingToPortal(false)
         setTimeout(() => setPortalMessage(null), 4000)
         return
       }
 
+      // Fetch configured portals from server
+      const listResp = await fetch("/api/portal/list")
+      const listBody = await listResp.json().catch(() => ({ portals: [] }))
+      const portals = Array.isArray(listBody?.portals) ? listBody.portals : []
+      if (!portals.length) {
+        setPortalMessage("No portals are configured. Please set up a portal in environment.")
+        setTimeout(() => setPortalMessage(null), 6000)
+        return
+      }
+
+      if (portals.length === 1) {
+        // Send immediately to the single configured portal
+        setIsSendingToPortal(true)
+        await sendExportToPortal(portals[0].id, { uploadId, fileName, description })
+        setIsSendingToPortal(false)
+      } else {
+        // Present chooser UI
+        setPortalList(portals)
+        setSelectedPortalId(portals[0]?.id ?? null)
+        setShowPortalChooser(true)
+      }
+    } catch (err) {
+      setPortalMessage(err instanceof Error ? err.message : "Failed to send to portal")
+      setTimeout(() => setPortalMessage(null), 6000)
+    }
+  }, [uploadId, preview, captionSegments, transcriptId, isSavingTranscript, handleSaveTranscript])
+
+  const sendExportToPortal = useCallback(async (portalId: string | null, payloadData?: { uploadId: string; fileName: string; description: string }) => {
+    setIsSendingToPortal(true)
+    setPortalMessage(null)
+    try {
+      const fileName = payloadData?.fileName ?? (preview?.upload?.title ?? `upload-${uploadId}.mp4`)
+      const description = payloadData?.description ?? ((preview?.upload?.metadata as any)?.description ?? captionSegments.map((s) => s.text).join(" \n").slice(0, 1000))
+      // Build segments + customStyles payload so server can render using live editor state
+      const renderTemplateConfig = Templates[selectedTemplateOption.renderTemplate] || Templates.minimal
+      const playResX = videoResolution?.width ?? 1920
+      const playResY = videoResolution?.height ?? 1080
+      const baseFontSize = renderTemplateConfig.fontSize ?? 58
+      const targetFontSize = baseFontSize * (playResX / 1920) * overlayConfig.scale
+      const marginV = Math.max(0, Math.round((100 - overlayConfig.y) * (playResY / 100) - (targetFontSize / 2)))
+      const centerPercent = Math.max(0, Math.min(100, overlayConfig.y))
+      const karaokeOverrides = renderTemplateConfig.karaoke
+        ? { ...renderTemplateConfig.karaoke, lineCenterPercent: centerPercent }
+        : undefined
+
+      const bodyPayload: any = {
+        uploadId,
+        fileName,
+        description,
+        segments: captionSegments.map((segment) => ({ id: segment.id, start: segment.start, end: segment.end, text: segment.text, words: segment.words })),
+        customStyles: {
+          fontSize: styleOverrides.fontSize ?? Math.round(targetFontSize),
+          alignment: styleOverrides.alignment ?? renderTemplateConfig.alignment ?? 2,
+          marginV: styleOverrides.marginV ?? marginV,
+          primaryColor: styleOverrides.primaryColor,
+          outlineColor: styleOverrides.outlineColor,
+          playResX,
+          playResY,
+          karaoke: karaokeOverrides,
+          // Emoji knobs
+          emojiOffsetPx: Math.round(playResY * 0.03),
+          emojiRiseMs: 400,
+          emojiSize: Math.round(140 * (playResX / 1920) * overlayConfig.scale),
+        },
+      }
+      if (portalId) bodyPayload.portalId = portalId
+
       const resp = await fetch("/api/export/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uploadId, fileName, description }),
+        body: JSON.stringify(bodyPayload),
       })
 
       const body = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(body?.message ?? "Failed to create export job")
 
       setPortalMessage(`Export job queued (id: ${body.jobId})`)
+      setShowPortalChooser(false)
     } catch (err) {
       setPortalMessage(err instanceof Error ? err.message : "Failed to send to portal")
     } finally {
@@ -913,7 +993,7 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
               {captionSegments.length} caption segments · Language {preview?.upload.language ?? "—"}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex flex-wrap items-center gap-3">
             <Button
               variant="outline"
               onClick={handleSaveTranscript}
@@ -929,26 +1009,53 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
               <Download className="h-4 w-4" />
               {exportButtonLabel}
             </Button>
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={() => void handleSendToPortal()}
-              disabled={isSendingToPortal}
-            >
-              {isSendingToPortal ? (
-                <>
-                  <Upload className="w-4 h-4 animate-pulse" />
-                  Sending...
-                </>
-              ) : (
-                <>
-                  <Upload className="w-4 h-4" />
-                  Send to Portal
-                </>
+            <div className="relative">
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => void handleSendToPortal()}
+                disabled={isSendingToPortal}
+              >
+                {isSendingToPortal ? (
+                  <>
+                    <Upload className="w-4 h-4 animate-pulse" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4" />
+                    Send to Portal
+                  </>
+                )}
+              </Button>
+
+              {showPortalChooser && (
+                <div className="absolute right-0 z-50 mt-2 w-80 rounded-md bg-card p-3 shadow-lg border">
+                  <div className="mb-2 text-sm font-medium">Send to Portal</div>
+                  <div className="space-y-2 max-h-48 overflow-auto">
+                    {portalList.map((p) => (
+                      <label key={p.id} className="flex items-center gap-3 rounded-md border p-2 cursor-pointer">
+                        <input type="radio" name="portal" className="h-4 w-4" value={p.id} checked={selectedPortalId === p.id} onChange={() => setSelectedPortalId(p.id)} />
+                        <div className="flex-1 text-sm">
+                          <div className="font-medium">{p.name ?? p.url}</div>
+                          <div className="text-xs text-muted-foreground truncate">{p.url}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex justify-end gap-2">
+                    <Button variant="ghost" onClick={() => setShowPortalChooser(false)}>Cancel</Button>
+                    <Button onClick={() => void sendExportToPortal(selectedPortalId)} disabled={isSendingToPortal}>
+                      {isSendingToPortal ? "Sending..." : "Send"}
+                    </Button>
+                  </div>
+                </div>
               )}
-            </Button>
+            </div>
           </div>
         </div>
+
+      
 
         {previewError && (
           <div className="rounded-2xl border border-rose-500/40 bg-rose-500/5 px-4 py-3 text-sm text-rose-500">
