@@ -168,3 +168,12 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Utility to hide native scrollbars while preserving scroll behavior */
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* WebKit */
+}

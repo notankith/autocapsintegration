@@ -1030,9 +1030,9 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
               </Button>
 
               {showPortalChooser && (
-                <div className="absolute right-0 z-50 mt-2 w-80 rounded-md bg-card p-3 shadow-lg border">
+                <div className="fixed right-8 top-20 z-50 w-96 rounded-md bg-card p-3 shadow-lg border">
                   <div className="mb-2 text-sm font-medium">Send to Portal</div>
-                  <div className="space-y-2 max-h-48 overflow-auto">
+                  <div className="space-y-2 max-h-none overflow-visible">
                     {portalList.map((p) => (
                       <label key={p.id} className="flex items-center gap-3 rounded-md border p-2 cursor-pointer">
                         <input type="radio" name="portal" className="h-4 w-4" value={p.id} checked={selectedPortalId === p.id} onChange={() => setSelectedPortalId(p.id)} />
@@ -1181,7 +1181,7 @@ export function PostUploadWorkspace({ uploadId }: PostUploadWorkspaceProps) {
           </div>
 
           <div className="w-full max-w-[520px] h-[720px]">
-            <div className="flex h-full flex-col rounded-3xl border border-border/70 bg-card/90 p-6 shadow-xl overflow-hidden">
+            <div className="flex h-full flex-col rounded-3xl border border-border/70 bg-card/90 p-6 shadow-xl overflow-visible">
               <Tabs value={activeTab} onValueChange={setActiveTab} className="flex h-full flex-col">
                 <div className="flex flex-col gap-2 flex-none">
                   <div className="flex items-center justify-between gap-3">
